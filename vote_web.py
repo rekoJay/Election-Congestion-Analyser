@@ -19,6 +19,18 @@ st.set_page_config(page_title="사전투표 혼잡도 분석기", layout="wide")
 st.title("🗳️ 선거 사전투표 혼잡도 분석기 (Web Ver.)")
 st.markdown("---")
 
+# 함수 정의: 엑셀 양식 생성
+def get_template_byte():
+    df_temp = pd.DataFrame({
+        "사전투표소명": ["예시: 서울종로구사전투표소", "예시: 00동사전투표소"],
+        "관내장비수": [3, 5],
+        "관외장비수": [2, 4]
+    })
+    buffer = io.BytesIO()
+    df_temp.to_excel(buffer, index=False)
+    buffer.seek(0)
+    return buffer
+
 # 1. 사이드바: 설정 및 업로드
 with st.sidebar:
     st.header("1. 설정 및 업로드")
@@ -45,10 +57,23 @@ with st.sidebar:
     st.subheader("투표 데이터 파일")
     uploaded_files = st.file_uploader("엑셀/CSV 파일을 드래그하세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'])
     
+    st.markdown("---")
+    
+    # 장비 현황 (양식 다운로드 추가됨)
     st.subheader("장비 현황 파일 (선택)")
-    equip_file = st.file_uploader("장비 현황 파일 업로드", type=['xlsx', 'xls'])
+    
+    # [추가된 기능] 양식 다운로드 버튼
+    st.download_button(
+        label="💾 장비현황 양식 다운로드 (.xlsx)",
+        data=get_template_byte(),
+        file_name="장비현황_양식.xlsx",
+        mime="application/vnd.ms-excel",
+        help="클릭하면 장비 입력을 위한 엑셀 양식을 다운로드합니다."
+    )
+    
+    equip_file = st.file_uploader("작성한 장비 파일 업로드", type=['xlsx', 'xls'])
 
-# 함수 정의 (기존 로직 재사용)
+# 함수 정의 (파일 정보 읽기)
 def get_file_info(file_obj):
     try:
         # Streamlit의 파일 객체는 바로 read 가능
@@ -75,7 +100,7 @@ def get_file_info(file_obj):
             if "읍면동명" in row_str:
                 header_idx = idx
         
-        # 파일 포인터 초기화 (중요)
+        # 파일 포인터 초기화
         file_obj.seek(0)
         return day, time, header_idx
     except Exception as e:
@@ -146,12 +171,13 @@ if st.button("🚀 분석 시작하기", type="primary"):
             if equip_file:
                 try:
                     equip_df = pd.read_excel(equip_file)
-                    # (간소화된 로직) 컬럼명에 '장비수'가 있으면 사용, 아니면 위치 기반
-                    if "관내장비수" not in equip_df.columns:
-                        # 여기선 로직 단순화를 위해 사용자에게 양식을 맞추도록 유도하거나 
-                        # 기존 로직을 그대로 가져와야 함. 
-                        # (코드 길이상 생략했으나 필요시 추가 가능)
-                        pass 
+                    # 파일 컬럼명 유연성 확보 (사용자가 양식을 안쓰고 대충 만들었을 경우 대비)
+                    if "관내장비수" in equip_df.columns:
+                        equip_df = equip_df[['사전투표소명', '관내장비수', '관외장비수']]
+                    else:
+                        # 컬럼 이름이 다르면 첫번째 시트의 0, 1, 2번째 컬럼을 가져옴
+                        equip_df = equip_df.iloc[:, [0, 1, 2]]
+                        equip_df.columns = ['사전투표소명', '관내장비수', '관외장비수']
                     
                     equip_df['사전투표소명'] = equip_df['사전투표소명'].astype(str).str.strip()
                     final_df['사전투표소명'] = final_df['사전투표소명'].astype(str).str.strip()
@@ -159,6 +185,7 @@ if st.button("🚀 분석 시작하기", type="primary"):
                     final_df['관내장비수'] = pd.to_numeric(final_df['관내장비수'], errors='coerce').fillna(1)
                     final_df['관외장비수'] = pd.to_numeric(final_df['관외장비수'], errors='coerce').fillna(1)
                 except:
+                    st.warning("장비 파일 형식이 맞지 않아 기본값(1대)으로 처리했습니다.")
                     final_df['관내장비수'] = 1
                     final_df['관외장비수'] = 1
             else:
@@ -208,10 +235,10 @@ if st.button("🚀 분석 시작하기", type="primary"):
 
                 plt.suptitle(f"사전투표 혼잡도 분석 - {e_type_label}\n(녹색 테두리: 혼잡도 {threshold} 이상)", fontsize=20, fontweight='bold')
                 plt.tight_layout()
-                st.pyplot(fig) # Streamlit에 그래프 그리기
+                st.pyplot(fig)
 
             with tab2:
-                st.dataframe(final_df) # 엑셀처럼 보여주기
+                st.dataframe(final_df) 
                 
                 # 엑셀 다운로드 버튼
                 buffer = io.BytesIO()
