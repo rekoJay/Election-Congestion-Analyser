@@ -15,7 +15,7 @@ class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("선거 사전투표 혼잡도 분석기 (Smart Ver.)")
-        self.root.geometry("620x750")
+        self.root.geometry("620x820") # 옵션창이 추가되어 높이를 조금 늘렸습니다.
         self.root.resizable(False, False) 
         
         self.vote_files = []
@@ -68,14 +68,37 @@ class ElectionAnalyzerApp:
         
         self.lbl_equip_status = ttk.Label(frame_equip, text="파일 미선택 (기본값: 1대 적용)", foreground="gray")
         self.lbl_equip_status.pack(pady=(5, 0))
+
+        # [추가됨] 4. 분석 옵션 설정
+        frame_option = ttk.LabelFrame(main_frame, text=" 4. 분석 옵션 설정 ", padding="15")
+        frame_option.pack(fill="x", pady=(0, 15))
         
-        # 4. 실행 버튼
+        # 변수 설정 (기본값 True = 체크됨)
+        self.var_day1 = tk.BooleanVar(value=True)
+        self.var_day2 = tk.BooleanVar(value=True)
+        self.var_intra = tk.BooleanVar(value=True)
+        self.var_extra = tk.BooleanVar(value=True)
+        
+        chk_frame = ttk.Frame(frame_option)
+        chk_frame.pack(fill="x")
+        
+        ttk.Label(chk_frame, text="기간: ").pack(side="left")
+        ttk.Checkbutton(chk_frame, text="1일차", variable=self.var_day1).pack(side="left", padx=5)
+        ttk.Checkbutton(chk_frame, text="2일차", variable=self.var_day2).pack(side="left", padx=5)
+        
+        ttk.Separator(chk_frame, orient="vertical").pack(side="left", fill="y", padx=15)
+        
+        ttk.Label(chk_frame, text="구분: ").pack(side="left")
+        ttk.Checkbutton(chk_frame, text="관내", variable=self.var_intra).pack(side="left", padx=5)
+        ttk.Checkbutton(chk_frame, text="관외", variable=self.var_extra).pack(side="left", padx=5)
+        
+        # 5. 실행 버튼
         ttk.Separator(main_frame, orient="horizontal").pack(fill="x", pady=10)
         
         btn_run = ttk.Button(main_frame, text="🚀 분석 및 시각화 실행", command=self.run_analysis)
         btn_run.pack(fill="x", ipady=10, pady=5)
         
-        # 5. 로그창
+        # 6. 로그창
         log_frame = ttk.LabelFrame(main_frame, text=" 진행 상황 ", padding="10")
         log_frame.pack(fill="both", expand=True, pady=(10, 0))
         
@@ -125,12 +148,7 @@ class ElectionAnalyzerApp:
             return { "equip_cols_idx": [0, 4, 5] }
 
     def get_file_info(self, file_path):
-        """
-        파일의 상단(5줄)을 읽어서 [X일차]와 [HH:MM] 정보를 추출하고,
-        데이터가 시작되는 헤더 인덱스도 함께 찾습니다.
-        """
         try:
-            # 파일 포맷에 따라 상단 읽기
             if file_path.endswith('.csv'):
                 try:
                     df_meta = pd.read_csv(file_path, header=None, nrows=10, encoding='cp949')
@@ -141,13 +159,11 @@ class ElectionAnalyzerApp:
             
             day = None
             time = None
-            header_idx = 3 # 기본값
+            header_idx = 3
 
-            # 메타데이터 스캔
             for idx, row in df_meta.iterrows():
                 row_str = " ".join(row.astype(str).values)
                 
-                # 1. 일차/시간 찾기 (예: [1일차], [07:00])
                 if day is None:
                     match_day = re.search(r'\[(\d+)일차\]', row_str)
                     match_time = re.search(r'\[(\d{1,2}):(\d{2})\]', row_str)
@@ -155,9 +171,8 @@ class ElectionAnalyzerApp:
                     if match_day:
                         day = int(match_day.group(1))
                     if match_time:
-                        time = int(match_time.group(1)) # 07:00 -> 7
+                        time = int(match_time.group(1))
 
-                # 2. 헤더 위치 찾기 ('읍면동명'이 있는 줄)
                 if "읍면동명" in row_str:
                     header_idx = idx
 
@@ -187,19 +202,16 @@ class ElectionAnalyzerApp:
         
         all_data = []
         config = self.get_column_config()
-        
         success_count = 0
 
         for file in self.vote_files:
             try:
-                # 파일 내부에서 정보 추출
                 day, time, header_row = self.get_file_info(file)
                 
                 if day is None or time is None:
                     self.log(f"⚠️ 정보 인식 실패 (건너뜀): {os.path.basename(file)}")
                     continue
                 
-                # 데이터 로드
                 if file.endswith('.csv'):
                     try:
                         df = pd.read_csv(file, header=header_row, encoding='cp949')
@@ -230,8 +242,8 @@ class ElectionAnalyzerApp:
                 pass
 
         if not all_data:
-            self.log("❌ 유효한 데이터가 없습니다. 파일을 확인해주세요.")
-            messagebox.showerror("오류", "데이터를 읽을 수 없습니다.\n파일 내부에 [1일차][07:00] 형식의 정보가 있는지 확인해주세요.")
+            self.log("❌ 유효한 데이터가 없습니다.")
+            messagebox.showerror("오류", "데이터를 읽을 수 없습니다.")
             return
 
         self.log(f"총 {success_count}개 파일 처리 완료. 데이터 병합 중...")
@@ -246,7 +258,6 @@ class ElectionAnalyzerApp:
         final_df.loc[mask_start, '시간대별_관내투표자수'] = final_df.loc[mask_start, '관내사전투표자수']
         final_df.loc[mask_start, '시간대별_관외투표자수'] = final_df.loc[mask_start, '관외사전투표자수']
 
-        # 장비 데이터 병합
         if self.equipment_file:
             try:
                 equip_df = pd.read_excel(self.equipment_file)
@@ -295,18 +306,47 @@ class ElectionAnalyzerApp:
         df['label_intra'] = df['short_name'] + "(" + df['관내장비수'].astype(int).astype(str) + ")"
         df['label_extra'] = df['short_name'] + "(" + df['관외장비수'].astype(int).astype(str) + ")"
 
-        fig, axes = plt.subplots(2, 2, figsize=(18, 14))
-        scenarios = [
-            (1, '관내', 'label_intra', '관내_혼잡도', axes[0,0]),
-            (1, '관외', 'label_extra', '관외_혼잡도', axes[0,1]),
-            (2, '관내', 'label_intra', '관내_혼잡도', axes[1,0]),
-            (2, '관외', 'label_extra', '관외_혼잡도', axes[1,1])
+        # 체크박스 상태에 따라 필터링
+        all_scenarios = [
+            (1, '관내', 'label_intra', '관내_혼잡도', self.var_day1.get() and self.var_intra.get()),
+            (1, '관외', 'label_extra', '관외_혼잡도', self.var_day1.get() and self.var_extra.get()),
+            (2, '관내', 'label_intra', '관내_혼잡도', self.var_day2.get() and self.var_intra.get()),
+            (2, '관외', 'label_extra', '관외_혼잡도', self.var_day2.get() and self.var_extra.get())
         ]
         
+        active_scenarios = [s for s in all_scenarios if s[4]]
+        
+        count = len(active_scenarios)
+        if count == 0:
+            messagebox.showwarning("알림", "선택된 분석 옵션이 없습니다.\n옵션을 최소 하나 이상 체크해주세요.")
+            return
+
+        if count == 1:
+            nrows, ncols = 1, 1
+            figsize = (10, 7)
+        elif count == 2:
+            nrows, ncols = 1, 2
+            figsize = (18, 7)
+        elif count == 3:
+            nrows, ncols = 1, 3
+            figsize = (20, 7)
+        else: 
+            nrows, ncols = 2, 2
+            figsize = (18, 14)
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        
+        if count == 1:
+            axes_flat = [axes]
+        else:
+            axes_flat = axes.flatten()
+
         max_val = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
         
-        for day, type_name, label_col, value_col, ax in scenarios:
+        for idx, (day, type_name, label_col, value_col, _) in enumerate(active_scenarios):
+            ax = axes_flat[idx]
             df_day = df[df['일차'] == day]
+            
             if df_day.empty:
                 ax.text(0.5, 0.5, '데이터 없음', ha='center', va='center')
                 continue
@@ -314,19 +354,19 @@ class ElectionAnalyzerApp:
             pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
             sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Reds', linewidths=.5, vmin=0, vmax=max_val, ax=ax)
             ax.set_title(f'{day}일차 {type_name} 혼잡도', fontsize=14, fontweight='bold')
-            
-            # [수정됨] 축 제목 설정 (글자 크기 살짝 키움)
             ax.set_ylabel('사전투표소(장비수)', fontsize=11, fontweight='bold')
             
-            rows, cols = pivot.shape
-            for y in range(rows):
-                for x in range(cols):
+            rows_p, cols_p = pivot.shape
+            for y in range(rows_p):
+                for x in range(cols_p):
                     val = pivot.iloc[y, x]
                     if pd.notna(val) and val >= threshold:
                         rect = patches.Rectangle((x, y), 1, 1, linewidth=3, edgecolor='#00FF00', facecolor='none')
                         ax.add_patch(rect)
 
-        # [수정됨] 범례 텍스트 수정
+        if count == 3 and nrows * ncols > 3:
+             axes_flat[3].axis('off')
+
         plt.suptitle(f"사전투표 혼잡도 분석 - {label_text}\n(녹색 테두리: 혼잡도 {threshold} 이상)", fontsize=20, fontweight='bold')
         plt.tight_layout()
         
