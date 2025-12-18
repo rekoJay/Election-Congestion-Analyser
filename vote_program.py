@@ -14,7 +14,7 @@ import platform
 class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("선거 사전투표 시뮬레이터 (Final Ver.)")
+        self.root.title("사전투표혼잡도분석기")
         self.root.geometry("680x920") 
         self.root.resizable(False, True) 
         
@@ -55,15 +55,15 @@ class ElectionAnalyzerApp:
         ttk.Radiobutton(frame_type, text="지방선거", variable=self.election_type, value="local").pack(side="left", padx=10)
         
         # 2. 데이터 파일 로드
-        frame_data = ttk.LabelFrame(content_frame, text=" 2. 기초 데이터 로드 (자동 스캔) ", padding="10")
+        frame_data = ttk.LabelFrame(content_frame, text=" 2. 기초 데이터 로드 ", padding="10")
         frame_data.pack(fill="x", pady=(0, 10))
         
-        btn_files = ttk.Button(frame_data, text="📂 투표 데이터 파일 선택 (필수)", command=self.select_vote_files)
+        btn_files = ttk.Button(frame_data, text="📂 투표 데이터 파일 업로드", command=self.select_vote_files)
         btn_files.pack(fill="x", ipady=3)
         self.lbl_file_count = ttk.Label(frame_data, text="파일 없음", foreground="gray", font=("맑은 고딕", 8))
         self.lbl_file_count.pack(pady=(2, 5))
 
-        btn_equip = ttk.Button(frame_data, text="📂 장비 현황 파일 선택 (선택)", command=self.select_equip_file)
+        btn_equip = ttk.Button(frame_data, text="📂 장비 현황 파일 업로드", command=self.select_equip_file)
         btn_equip.pack(fill="x", ipady=3)
         self.lbl_equip_status = ttk.Label(frame_data, text="파일 미선택 (기본값: 1대 적용)", foreground="gray", font=("맑은 고딕", 8))
         self.lbl_equip_status.pack(pady=(2, 0))
@@ -85,7 +85,7 @@ class ElectionAnalyzerApp:
         self.lbl_rate.pack(side="right")
 
         # 3-2. 장비 및 개별 증가율 리스트
-        ttk.Label(frame_sim, text="📋 투표소별 설정 (더블클릭하여 개별 수정)", font=("맑은 고딕", 9, "bold")).pack(anchor="w")
+        ttk.Label(frame_sim, text="📋 투표소별 설정 (수정할 항목을 더블클릭하세요)", font=("맑은 고딕", 9, "bold")).pack(anchor="w")
         
         tree_frame = ttk.Frame(frame_sim)
         tree_frame.pack(fill="both", expand=True, pady=5)
@@ -150,7 +150,6 @@ class ElectionAnalyzerApp:
         self.root.update()
 
     def on_slider_change(self, val):
-        """슬라이더 변경 시 라벨 업데이트 및 표 전체 값 변경"""
         rate = int(float(val))
         text = f"{rate}% "
         if rate > 0:
@@ -167,7 +166,6 @@ class ElectionAnalyzerApp:
         for item_id in self.tree.get_children():
             current_vals = self.tree.item(item_id)['values']
             st_name = current_vals[0]
-            # 장비 수는 유지하고 비율만 업데이트
             self.tree.item(item_id, values=(st_name, current_vals[1], current_vals[2], rate))
             
             if st_name in self.station_data:
@@ -202,24 +200,19 @@ class ElectionAnalyzerApp:
 
         station_set = set()
         
-        # [핵심 수정] 읍면동명 대신 '사전투표소명'을 기준으로 스캔
         for file in self.vote_files:
             try:
                 _, _, header_row = self.get_file_info_header(file)
                 
-                # 파일 읽기
                 if file.endswith('.csv'):
                     try: df = pd.read_csv(file, header=header_row, encoding='cp949')
                     except: df = pd.read_csv(file, header=header_row, encoding='utf-8')
                 else:
                     df = pd.read_excel(file, header=header_row)
                 
-                # [변경점] 사전투표소명 컬럼이 존재하면 그것을 사용
                 if '사전투표소명' in df.columns:
-                    # 1. 합계 행 등 불필요한 행 제거 (사전투표소명이 비어있는 경우가 많음)
                     df = df.dropna(subset=['사전투표소명'])
                     
-                    # 2. 혹시 모르니 읍면동명 '합계' 필터링도 유지
                     if '읍면동명' in df.columns:
                         temp_col = df['읍면동명'].astype(str).str.replace(' ', '')
                         mask = temp_col.str.contains('합계|소계|총계|누계', na=False)
@@ -267,7 +260,6 @@ class ElectionAnalyzerApp:
             except Exception as e:
                 self.log(f"장비 파일 읽기 오류: {e}")
 
-        # 트리뷰 업데이트
         for item in self.tree.get_children():
             self.tree.delete(item)
         
@@ -276,14 +268,11 @@ class ElectionAnalyzerApp:
         current_global_rate = int(self.var_rate.get())
 
         for st in sorted_stations:
-            # 장비 매칭 (이름이 포함되면 매칭)
-            # 예: 장비파일 '신성동제1' -> 투표파일 '신성동제1사전투표소' (매칭 성공)
             matched_data = None
             if st in equip_map:
                 matched_data = equip_map[st]
             else:
                 for k, v in equip_map.items():
-                    # k(장비파일 이름)가 st(투표파일 이름)에 포함되거나 그 반대면 OK
                     if str(k) in st or st in str(k): 
                         matched_data = v
                         break
@@ -302,32 +291,42 @@ class ElectionAnalyzerApp:
 
     def on_tree_double_click(self, event):
         item_id = self.tree.identify_row(event.y)
-        column = self.tree.identify_column(event.x)
+        column = self.tree.identify_column(event.x) # 클릭한 컬럼 확인 (#1=이름, #2=관내, #3=관외, #4=증가율)
         
         if not item_id: return
         
         st_name = item_id
         vals = self.tree.item(item_id)['values']
         
-        curr_intra, curr_extra, curr_rate = vals[1], vals[2], vals[3]
+        # 현재 값들 (이름, 관내, 관외, 증가율)
+        curr_intra = vals[1]
+        curr_extra = vals[2]
+        curr_rate = vals[3]
         
-        if column == '#4': # 증가율 수정
+        # [수정된 부분] 컬럼별로 분기 처리
+        if column == '#2': # 관내 장비 수정
+            new_intra = simpledialog.askinteger("관내 장비 수정", f"[{st_name}]\n관내 장비 수:", 
+                                              initialvalue=curr_intra, minvalue=1, maxvalue=50)
+            if new_intra is not None:
+                self.tree.item(item_id, values=(st_name, new_intra, curr_extra, curr_rate))
+                self.station_data[st_name]['intra'] = new_intra
+                self.log(f"{st_name} 관내 장비 변경: {new_intra}대")
+                
+        elif column == '#3': # 관외 장비 수정
+            new_extra = simpledialog.askinteger("관외 장비 수정", f"[{st_name}]\n관외 장비 수:", 
+                                              initialvalue=curr_extra, minvalue=1, maxvalue=50)
+            if new_extra is not None:
+                self.tree.item(item_id, values=(st_name, curr_intra, new_extra, curr_rate))
+                self.station_data[st_name]['extra'] = new_extra
+                self.log(f"{st_name} 관외 장비 변경: {new_extra}대")
+                
+        elif column == '#4': # 증가율 수정
             new_rate = simpledialog.askinteger("증가율 수정", f"[{st_name}]\n투표자 증가율(%):", 
                                              initialvalue=curr_rate, minvalue=-100, maxvalue=200)
             if new_rate is not None:
                 self.tree.item(item_id, values=(st_name, curr_intra, curr_extra, new_rate))
                 self.station_data[st_name]['rate'] = new_rate
                 self.log(f"{st_name} 증가율 변경: {new_rate}%")
-        else: # 장비 수정
-            new_intra = simpledialog.askinteger("장비 수정", f"[{st_name}]\n관내 장비 수:", initialvalue=curr_intra, minvalue=1, maxvalue=50)
-            if new_intra is None: return
-            new_extra = simpledialog.askinteger("장비 수정", f"[{st_name}]\n관외 장비 수:", initialvalue=curr_extra, minvalue=1, maxvalue=50)
-            if new_extra is None: return
-            
-            self.tree.item(item_id, values=(st_name, new_intra, new_extra, curr_rate))
-            self.station_data[st_name]['intra'] = new_intra
-            self.station_data[st_name]['extra'] = new_extra
-            self.log(f"{st_name} 장비 변경: 관내{new_intra}/관외{new_extra}")
 
     def get_file_info_header(self, file_path):
         try:
@@ -347,7 +346,6 @@ class ElectionAnalyzerApp:
                     match_time = re.search(r'\[(\d{1,2}):(\d{2})\]', row_str)
                     if match_day: day = int(match_day.group(1))
                     if match_time: time = int(match_time.group(1))
-                # [수정] 헤더 찾기: '사전투표소명' 또는 '읍면동명'이 보이면 헤더로 인식
                 if "사전투표소명" in row_str or "읍면동명" in row_str:
                     header_idx = idx
             return day, time, header_idx
@@ -378,19 +376,15 @@ class ElectionAnalyzerApp:
                 else:
                     df = pd.read_excel(file, header=header_row)
 
-                # [핵심 수정] 읍면동명 대신 '사전투표소명' 사용
                 if '사전투표소명' not in df.columns: continue
                 
-                # 1. 합계 행 제거 (사전투표소명 NaN)
                 df = df.dropna(subset=['사전투표소명'])
                 
-                # 2. 읍면동명 '합계' 필터링 (안전장치)
                 if '읍면동명' in df.columns:
                     temp_col = df['읍면동명'].astype(str).str.replace(' ', '')
                     mask = temp_col.str.contains('합계|소계|총계|누계', na=False)
                     df = df[~mask].copy()
                 
-                # 이제 읍면동명으로 덮어쓰지 않고, 진짜 사전투표소명을 사용합니다!
                 df['사전투표소명'] = df['사전투표소명'].astype(str).str.strip()
 
                 for col in ['관내사전투표자수', '관외사전투표자수']:
@@ -399,7 +393,6 @@ class ElectionAnalyzerApp:
                             df[col] = df[col].astype(str).str.replace(',', '').str.strip()
                             df[col] = pd.to_numeric(df[col], errors='coerce')
                 
-                # 개별 증가율 적용
                 def apply_rate(row, col_name):
                     st = row['사전투표소명']
                     original_val = row[col_name]
@@ -424,18 +417,14 @@ class ElectionAnalyzerApp:
 
         final_df = pd.concat(all_data, ignore_index=True)
         
-        # [중복 체크] 사전투표소명을 썼으니 이제 '신성동제1', '신성동제2'는 다르게 인식됨
-        # 만약 정말 똑같은 파일이 2개 올라갔다면 여기서 잡힘
         duplicates = final_df[final_df.duplicated(subset=['사전투표소명', '일차', '시간대'], keep=False)]
         if not duplicates.empty:
             problem_stations = duplicates['사전투표소명'].unique()
             messagebox.showwarning("중복 데이터 경고", f"중복 데이터가 있습니다 (같은 시간/투표소).\n파일을 중복 선택했는지 확인하세요.\n{problem_stations[:3]}...")
-            # 중복 제거 후 진행
             final_df = final_df.drop_duplicates(subset=['사전투표소명', '일차', '시간대'])
 
         final_df = final_df.sort_values(by=['사전투표소명', '일차', '시간대'])
         
-        # 시간대별 계산
         final_df['시간대별_관내투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관내사전투표자수'].diff()
         final_df['시간대별_관외투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관외사전투표자수'].diff()
         
@@ -443,7 +432,6 @@ class ElectionAnalyzerApp:
         final_df.loc[mask_start, '시간대별_관내투표자수'] = final_df.loc[mask_start, '관내사전투표자수']
         final_df.loc[mask_start, '시간대별_관외투표자수'] = final_df.loc[mask_start, '관외사전투표자수']
 
-        # 장비 데이터 매핑
         def get_equip_cnt(row, type_):
             st = row['사전투표소명']
             if st in self.station_data:
@@ -461,7 +449,6 @@ class ElectionAnalyzerApp:
         final_df.to_excel(save_name, index=False)
         self.log(f"엑셀 저장 완료: {save_name}")
         
-        # 이상치 알림
         current_max = max(final_df['관내_혼잡도'].max(), final_df['관외_혼잡도'].max())
         if current_max >= 200:
             if final_df['관내_혼잡도'].max() >= final_df['관외_혼잡도'].max():
@@ -494,7 +481,6 @@ class ElectionAnalyzerApp:
         plt.rc('font', family=font_family)
         plt.rc('axes', unicode_minus=False)
 
-        # 라벨 간소화 (000사전투표소 -> 000)
         df['short_name'] = df['사전투표소명'].str.replace('사전투표소', '')
         df['label_intra'] = df['short_name'] + "(" + df['관내장비수'].astype(int).astype(str) + ")"
         df['label_extra'] = df['short_name'] + "(" + df['관외장비수'].astype(int).astype(str) + ")"
