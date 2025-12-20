@@ -11,6 +11,8 @@ import matplotlib.patches as patches
 import seaborn as sns
 import platform
 import numpy as np 
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.colors import ListedColormap 
 
 class ElectionAnalyzerApp:
     def __init__(self, root):
@@ -21,7 +23,8 @@ class ElectionAnalyzerApp:
         
         self.vote_files = []
         self.equipment_file = None
-        # 데이터 구조: { '투표소명': {'intra': 1, 'extra': 1, 'rate': 0.0} }
+        
+        # 데이터 구조: { '투표소명': {'intra': 1, 'extra': 1, 'rate': 0.0, 'org_intra': 1, 'org_extra': 1} }
         self.station_data = {} 
         
         self.create_widgets()
@@ -272,7 +275,10 @@ class ElectionAnalyzerApp:
                 intra = 1
                 extra = 1
             
-            self.station_data[st] = {'intra': intra, 'extra': extra, 'rate': current_global_rate}
+            self.station_data[st] = {
+                'intra': intra, 'extra': extra, 'rate': current_global_rate,
+                'org_intra': intra, 'org_extra': extra
+            }
             self.tree.insert("", "end", iid=st, values=(st, intra, extra, current_global_rate))
             
         self.log(f"목록 갱신 완료: 총 {len(sorted_stations)}개 투표소")
@@ -415,14 +421,18 @@ class ElectionAnalyzerApp:
         final_df.loc[mask_start, '시간대별_관내투표자수'] = final_df.loc[mask_start, '관내사전투표자수']
         final_df.loc[mask_start, '시간대별_관외투표자수'] = final_df.loc[mask_start, '관외사전투표자수']
 
-        def get_equip_cnt(row, type_):
+        def get_equip_info(row, type_):
             st = row['사전투표소명']
             if st in self.station_data:
-                return self.station_data[st][type_]
-            return 1
+                return self.station_data[st][type_], self.station_data[st][f'org_{type_}']
+            return 1, 1
 
-        final_df['관내장비수'] = final_df.apply(lambda x: get_equip_cnt(x, 'intra'), axis=1)
-        final_df['관외장비수'] = final_df.apply(lambda x: get_equip_cnt(x, 'extra'), axis=1)
+        final_df[['관내장비수', '원본_관내장비수']] = final_df.apply(
+            lambda x: pd.Series(get_equip_info(x, 'intra')), axis=1
+        )
+        final_df[['관외장비수', '원본_관외장비수']] = final_df.apply(
+            lambda x: pd.Series(get_equip_info(x, 'extra')), axis=1
+        )
 
         final_df['관내_혼잡도'] = final_df['시간대별_관내투표자수'] / final_df['관내장비수']
         final_df['관외_혼잡도'] = final_df['시간대별_관외투표자수'] / final_df['관외장비수']
@@ -434,48 +444,48 @@ class ElectionAnalyzerApp:
         
         self.log("그래프 생성 중...")
         try:
-            self.visualize_results(final_df, timestamp, label, save_name)
+            self.visualize_results(final_df, timestamp, save_name)
         except Exception as e:
             self.log(f"시각화 실패: {e}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("오류", str(e))
 
-    def visualize_results(self, df, timestamp, label_text, save_name):
+    def visualize_results(self, df, timestamp, save_name):
         system_name = platform.system()
         font_family = 'Malgun Gothic' if system_name == 'Windows' else 'AppleGothic'
         plt.rc('font', family=font_family)
         plt.rc('axes', unicode_minus=False)
 
         df['short_name'] = df['사전투표소명'].str.replace('사전투표소', '')
-        df['label_intra'] = df['short_name'] + "(" + df['관내장비수'].astype(int).astype(str) + ")"
-        df['label_extra'] = df['short_name'] + "(" + df['관외장비수'].astype(int).astype(str) + ")"
+        df['label_clean'] = df['short_name'] 
 
         all_scenarios = [
-            (1, '관내', 'label_intra', '관내_혼잡도', self.var_day1.get() and self.var_intra.get()),
-            (1, '관외', 'label_extra', '관외_혼잡도', self.var_day1.get() and self.var_extra.get()),
-            (2, '관내', 'label_intra', '관내_혼잡도', self.var_day2.get() and self.var_intra.get()),
-            (2, '관외', 'label_extra', '관외_혼잡도', self.var_day2.get() and self.var_extra.get())
+            (1, '관내', 'label_clean', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
+            (1, '관외', 'label_clean', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
+            (2, '관내', 'label_clean', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
+            (2, '관외', 'label_clean', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get())
         ]
         
-        active_scenarios = [s for s in all_scenarios if s[4]]
+        active_scenarios = [s for s in all_scenarios if s[6]]
         
         count = len(active_scenarios)
         if count == 0:
             messagebox.showwarning("알림", "옵션을 선택해주세요.")
             return
 
-        if count == 1: nrows, ncols, figsize = 1, 1, (10, 7)
-        elif count == 2: nrows, ncols, figsize = 1, 2, (18, 7)
-        elif count == 3: nrows, ncols, figsize = 1, 3, (20, 7)
-        else: nrows, ncols, figsize = 2, 2, (18, 14)
+        if count == 1: nrows, ncols, figsize = 1, 1, (12, 7)
+        elif count == 2: nrows, ncols, figsize = 1, 2, (20, 7)
+        elif count == 3: nrows, ncols, figsize = 1, 3, (22, 7)
+        else: nrows, ncols, figsize = 2, 2, (20, 14)
 
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
         if count == 1: axes_flat = [axes]
         else: axes_flat = axes.flatten()
-        
-        # 전체 데이터 기준 최대값 계산 (스케일 통일)
+
         max_val = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
         
-        for idx, (day, type_name, label_col, value_col, _) in enumerate(active_scenarios):
+        for idx, (day, type_name, label_col, value_col, eq_col, org_eq_col, _) in enumerate(active_scenarios):
             ax = axes_flat[idx]
             df_day = df[df['일차'] == day]
             
@@ -483,55 +493,100 @@ class ElectionAnalyzerApp:
                 ax.text(0.5, 0.5, '데이터 없음', ha='center', va='center')
                 continue
             
-            # 피벗 테이블 생성
+            # 1. 혼잡도 피벗
             pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
             
-            # [수정] 1. 평균 열 (투표소별 평균) 추가
-            pivot['평균'] = pivot.mean(axis=1)
-            
-            # [수정] 2. 평균 행 (시간대별 평균) 추가 (방금 추가한 평균 열도 포함하여 계산)
+            # [수정] 평균 이름을 빈 문자열로 처리 (라벨 제거)
+            pivot[''] = pivot.mean(axis=1) 
             avg_row = pivot.mean(axis=0)
-            pivot.loc['평균'] = avg_row
+            pivot.loc[''] = avg_row
             
-            # [수정] 3. 컬럼 순서 재배치 ('평균'이 제일 앞으로)
-            time_cols = sorted([c for c in pivot.columns if c != '평균'])
-            new_cols = ['평균'] + time_cols
+            time_cols = sorted([c for c in pivot.columns if c != ''])
+            new_cols = [''] + time_cols
             pivot = pivot[new_cols]
             
-            # [수정] 4. 행 순서 재배치 ('평균'이 제일 위로)
-            row_labels = sorted([r for r in pivot.index if r != '평균'])
-            new_rows = ['평균'] + row_labels
+            row_labels = sorted([r for r in pivot.index if r != ''])
+            new_rows = [''] + row_labels
             pivot = pivot.reindex(new_rows)
+
+            # 2. 장비 현황 데이터 준비
+            equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
             
-            # 히트맵 그리기
-            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, linewidths=.5, vmin=0, vmax=max_val, ax=ax)
+            annot_labels = []
             
-            # 축 설정
+            for row_label in new_rows:
+                if row_label == '':
+                    annot_labels.append("")
+                else:
+                    try:
+                        curr = equip_data.loc[row_label, eq_col]
+                        org = equip_data.loc[row_label, org_eq_col]
+                        
+                        if curr != org:
+                            txt = f"{int(org)} → {int(curr)}"
+                        else:
+                            txt = f"{int(curr)}"
+                            
+                        annot_labels.append(txt)
+                    except:
+                        annot_labels.append("?")
+
+            equip_df = pd.DataFrame(0, index=new_rows, columns=['장비']) 
+            annot_matrix = pd.DataFrame(annot_labels, index=new_rows, columns=['장비'])
+
+            divider = make_axes_locatable(ax)
+            ax_equip = divider.append_axes("left", size="7%", pad=0.08) 
+            
+            # [수정] xticklabels=False로 설정하여 하단 '장비' 글씨 제거
+            sns.heatmap(equip_df, annot=annot_matrix, fmt='', 
+                        cmap=ListedColormap(['#F0F4F8']), 
+                        cbar=False, xticklabels=False,
+                        linewidths=0.5, linecolor='white', ax=ax_equip)
+            
+            ax_equip.set_title("장비수", fontsize=10, fontweight='bold', pad=10)
+            ax_equip.set_xlabel("") # 확실히 비움
+            ax_equip.set_ylabel("사전투표소", fontsize=11, fontweight='bold')
+            ax_equip.tick_params(axis='y', rotation=0)
+
+            # 메인 히트맵
+            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, 
+                        linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
+            
+            # 파란색 테두리 (평균값 강조)
+            rect_row = patches.Rectangle((0, 0), len(pivot.columns), 1, linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
+            ax.add_patch(rect_row)
+            
+            rect_col = patches.Rectangle((0, 0), 1, len(pivot), linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
+            ax.add_patch(rect_col)
+
+            ax.set_ylabel("") 
+            ax.set_yticks([]) 
+            
             ax.xaxis.tick_top()
             ax.xaxis.set_label_position('top')
             
-            # [수정] 5. X축 눈금 및 라벨 설정
-            # 첫 번째 셀('평균')은 가운데 정렬, 나머지(시간대)는 경계선(Line)에 맞춤
-            
-            # 눈금 위치: 0.5 ('평균' 중앙), 그리고 1부터 끝까지 정수 (시간대 경계선)
             ticks = [0.5] + list(range(1, len(pivot.columns) + 1))
             ax.set_xticks(ticks)
             
-            # 라벨 텍스트: '평균' + 시작시간-1 부터 끝시간까지
             if time_cols:
-                start_time = int(time_cols[0]) - 1 # 7시 데이터면 6시부터 시작
+                start_time = int(time_cols[0]) - 1
                 end_time = int(time_cols[-1])
-                labels = ['평균'] + list(range(start_time, end_time + 1))
+                # [수정] 첫 번째 라벨을 빈 문자열로 ('Av.' 제거)
+                labels = [''] + list(range(start_time, end_time + 1))
                 ax.set_xticklabels(labels, rotation=0)
 
-            ax.set_title(f'{day}일차 {type_name} 혼잡도 (시간당 처리인원)', fontsize=14, fontweight='bold', pad=20)
-            ax.set_ylabel('사전투표소(장비수)', fontsize=11, fontweight='bold')
+            ax.set_title(f'{type_name} 사전투표 {day}일차 (예상) 혼잡도', fontsize=14, fontweight='bold', pad=20)
             ax.set_xlabel('시간대', fontsize=11, fontweight='bold')
 
         if count == 3 and nrows * ncols > 3: axes_flat[3].axis('off')
 
-        plt.suptitle(f"시뮬레이션 결과 - {label_text}", fontsize=20, fontweight='bold')
-        plt.figtext(0.5, 0.02, "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.", ha='center', fontsize=12)
+        plt.suptitle(f"사전투표 운용장비 산출 시뮬레이션 결과", fontsize=20, fontweight='bold')
+        
+        plt.figtext(0.5, 0.02, 
+                    "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.\n"
+                    "장비 열 표기: [기존] → [변경] / 파란색 테두리: 평균값", 
+                    ha='center', fontsize=11, color='gray')
+        
         plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
         
         img_name = f"시뮬레이션_{timestamp}.png"
