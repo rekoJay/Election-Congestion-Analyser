@@ -10,11 +10,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import seaborn as sns
 import platform
+import numpy as np 
 
 class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("사전투표혼잡도분석기")
+        self.root.title("사전투표 운용장비 산출 프로그램")
         self.root.geometry("680x920") 
         self.root.resizable(False, True) 
         
@@ -45,17 +46,8 @@ class ElectionAnalyzerApp:
         content_frame = ttk.Frame(scrollable_frame, padding="20")
         content_frame.pack(fill="both", expand=True)
 
-        # 1. 선거 유형
-        frame_type = ttk.LabelFrame(content_frame, text=" 1. 선거 유형 선택 ", padding="10")
-        frame_type.pack(fill="x", pady=(0, 10))
-        
-        self.election_type = tk.StringVar(value="president")
-        ttk.Radiobutton(frame_type, text="대통령선거", variable=self.election_type, value="president").pack(side="left", padx=10)
-        ttk.Radiobutton(frame_type, text="국회의원선거", variable=self.election_type, value="general").pack(side="left", padx=10)
-        ttk.Radiobutton(frame_type, text="지방선거", variable=self.election_type, value="local").pack(side="left", padx=10)
-        
-        # 2. 데이터 파일 로드
-        frame_data = ttk.LabelFrame(content_frame, text=" 2. 기초 데이터 로드 ", padding="10")
+        # 1. 기초 데이터 로드
+        frame_data = ttk.LabelFrame(content_frame, text=" 1. 기초 데이터 로드 ", padding="10")
         frame_data.pack(fill="x", pady=(0, 10))
         
         btn_files = ttk.Button(frame_data, text="📂 투표 데이터 파일 업로드", command=self.select_vote_files)
@@ -68,11 +60,11 @@ class ElectionAnalyzerApp:
         self.lbl_equip_status = ttk.Label(frame_data, text="파일 미선택 (기본값: 1대 적용)", foreground="gray", font=("맑은 고딕", 8))
         self.lbl_equip_status.pack(pady=(2, 0))
         
-        # 3. 시뮬레이션 튜닝
-        frame_sim = ttk.LabelFrame(content_frame, text=" 3. 시뮬레이션 설정 (데이터 튜닝) ", padding="10")
+        # 2. 시뮬레이션 설정
+        frame_sim = ttk.LabelFrame(content_frame, text=" 2. 시뮬레이션 설정 (데이터 튜닝) ", padding="10")
         frame_sim.pack(fill="x", pady=(0, 10))
         
-        # 3-1. 투표율 조정 슬라이더
+        # 2-1. 투표율 조정 슬라이더
         frame_rate = ttk.Frame(frame_sim)
         frame_rate.pack(fill="x", pady=(0, 10))
         ttk.Label(frame_rate, text="📉 전체 투표자 증가율: ").pack(side="left")
@@ -84,7 +76,7 @@ class ElectionAnalyzerApp:
         scale.pack(fill="x", padx=10, pady=(0,10))
         self.lbl_rate.pack(side="right")
 
-        # 3-2. 장비 및 개별 증가율 리스트
+        # 2-2. 장비 및 개별 증가율 리스트
         ttk.Label(frame_sim, text="📋 투표소별 설정 (수정할 항목을 더블클릭하세요)", font=("맑은 고딕", 9, "bold")).pack(anchor="w")
         
         tree_frame = ttk.Frame(frame_sim)
@@ -110,8 +102,8 @@ class ElectionAnalyzerApp:
         
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-        # 4. 분석 옵션
-        frame_option = ttk.LabelFrame(content_frame, text=" 4. 보기 옵션 ", padding="10")
+        # 3. 보기 옵션
+        frame_option = ttk.LabelFrame(content_frame, text=" 3. 보기 옵션 ", padding="10")
         frame_option.pack(fill="x", pady=(0, 10))
         
         self.var_day1 = tk.BooleanVar(value=True)
@@ -130,12 +122,12 @@ class ElectionAnalyzerApp:
         ttk.Checkbutton(chk_frame, text="관내", variable=self.var_intra).pack(side="left", padx=5)
         ttk.Checkbutton(chk_frame, text="관외", variable=self.var_extra).pack(side="left", padx=5)
         
-        # 5. 실행 버튼
+        # 4. 실행 버튼
         ttk.Separator(content_frame, orient="horizontal").pack(fill="x", pady=10)
         btn_run = ttk.Button(content_frame, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation)
         btn_run.pack(fill="x", ipady=12)
         
-        # 6. 로그창
+        # 5. 로그창
         log_frame = ttk.LabelFrame(content_frame, text=" 시스템 로그 ", padding="10")
         log_frame.pack(fill="x", pady=(10, 0))
         
@@ -188,11 +180,7 @@ class ElectionAnalyzerApp:
             self.scan_stations() 
 
     def get_column_config(self):
-        e_type = self.election_type.get()
-        if e_type == "local":
-            return { "equip_cols_idx": [0, 4, 5] }
-        else:
-            return { "equip_cols_idx": [0, 7, 8] }
+        return { "equip_cols_idx": [0, 7, 8] }
 
     def scan_stations(self):
         if not self.vote_files:
@@ -291,20 +279,18 @@ class ElectionAnalyzerApp:
 
     def on_tree_double_click(self, event):
         item_id = self.tree.identify_row(event.y)
-        column = self.tree.identify_column(event.x) # 클릭한 컬럼 확인 (#1=이름, #2=관내, #3=관외, #4=증가율)
+        column = self.tree.identify_column(event.x) 
         
         if not item_id: return
         
         st_name = item_id
         vals = self.tree.item(item_id)['values']
         
-        # 현재 값들 (이름, 관내, 관외, 증가율)
         curr_intra = vals[1]
         curr_extra = vals[2]
         curr_rate = vals[3]
         
-        # [수정된 부분] 컬럼별로 분기 처리
-        if column == '#2': # 관내 장비 수정
+        if column == '#2': 
             new_intra = simpledialog.askinteger("관내 장비 수정", f"[{st_name}]\n관내 장비 수:", 
                                               initialvalue=curr_intra, minvalue=1, maxvalue=50)
             if new_intra is not None:
@@ -312,7 +298,7 @@ class ElectionAnalyzerApp:
                 self.station_data[st_name]['intra'] = new_intra
                 self.log(f"{st_name} 관내 장비 변경: {new_intra}대")
                 
-        elif column == '#3': # 관외 장비 수정
+        elif column == '#3': 
             new_extra = simpledialog.askinteger("관외 장비 수정", f"[{st_name}]\n관외 장비 수:", 
                                               initialvalue=curr_extra, minvalue=1, maxvalue=50)
             if new_extra is not None:
@@ -320,7 +306,7 @@ class ElectionAnalyzerApp:
                 self.station_data[st_name]['extra'] = new_extra
                 self.log(f"{st_name} 관외 장비 변경: {new_extra}대")
                 
-        elif column == '#4': # 증가율 수정
+        elif column == '#4': 
             new_rate = simpledialog.askinteger("증가율 수정", f"[{st_name}]\n투표자 증가율(%):", 
                                              initialvalue=curr_rate, minvalue=-100, maxvalue=200)
             if new_rate is not None:
@@ -357,10 +343,7 @@ class ElectionAnalyzerApp:
             messagebox.showwarning("주의", "투표 데이터 파일이 없습니다.")
             return
 
-        e_type = self.election_type.get()
-        if e_type == 'president': threshold, label = 120, "대통령선거"
-        elif e_type == 'general': threshold, label = 100, "국회의원선거"
-        else: threshold, label = 60, "지방선거"
+        label = "통합 분석"
 
         self.log(f"시뮬레이션 시작: {label}")
         all_data = []
@@ -449,33 +432,14 @@ class ElectionAnalyzerApp:
         final_df.to_excel(save_name, index=False)
         self.log(f"엑셀 저장 완료: {save_name}")
         
-        current_max = max(final_df['관내_혼잡도'].max(), final_df['관외_혼잡도'].max())
-        if current_max >= 200:
-            if final_df['관내_혼잡도'].max() >= final_df['관외_혼잡도'].max():
-                culprit = final_df.loc[final_df['관내_혼잡도'].idxmax()]
-                c_type, c_val = "관내", culprit['관내_혼잡도']
-                c_voters, c_equip = culprit['시간대별_관내투표자수'], culprit['관내장비수']
-            else:
-                culprit = final_df.loc[final_df['관외_혼잡도'].idxmax()]
-                c_type, c_val = "관외", culprit['관외_혼잡도']
-                c_voters, c_equip = culprit['시간대별_관외투표자수'], culprit['관외장비수']
-
-            warning_msg = (
-                f"⚠️ 높은 혼잡도({c_val:.0f}) 감지\n\n"
-                f"🛑 투표소: {culprit['사전투표소명']}\n"
-                f"⏰ 시간: {culprit['일차']}일차 {culprit['시간대']}시\n"
-                f"📊 내용: {c_type} 투표자 {c_voters:.0f}명\n"
-            )
-            messagebox.showwarning("데이터 확인", warning_msg)
-
         self.log("그래프 생성 중...")
         try:
-            self.visualize_results(final_df, timestamp, threshold, label, save_name)
+            self.visualize_results(final_df, timestamp, label, save_name)
         except Exception as e:
             self.log(f"시각화 실패: {e}")
             messagebox.showerror("오류", str(e))
 
-    def visualize_results(self, df, timestamp, threshold, label_text, save_name):
+    def visualize_results(self, df, timestamp, label_text, save_name):
         system_name = platform.system()
         font_family = 'Malgun Gothic' if system_name == 'Windows' else 'AppleGothic'
         plt.rc('font', family=font_family)
@@ -507,7 +471,8 @@ class ElectionAnalyzerApp:
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
         if count == 1: axes_flat = [axes]
         else: axes_flat = axes.flatten()
-
+        
+        # 전체 데이터 기준 최대값 계산 (스케일 통일)
         max_val = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
         
         for idx, (day, type_name, label_col, value_col, _) in enumerate(active_scenarios):
@@ -517,24 +482,57 @@ class ElectionAnalyzerApp:
             if df_day.empty:
                 ax.text(0.5, 0.5, '데이터 없음', ha='center', va='center')
                 continue
-                
-            pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
-            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Reds', linewidths=.5, vmin=0, vmax=max_val, ax=ax)
-            ax.set_title(f'{day}일차 {type_name} 혼잡도', fontsize=14, fontweight='bold')
-            ax.set_ylabel('사전투표소(장비수)', fontsize=11, fontweight='bold')
             
-            rows_p, cols_p = pivot.shape
-            for y in range(rows_p):
-                for x in range(cols_p):
-                    val = pivot.iloc[y, x]
-                    if pd.notna(val) and val >= threshold:
-                        rect = patches.Rectangle((x, y), 1, 1, linewidth=3, edgecolor='#00FF00', facecolor='none')
-                        ax.add_patch(rect)
+            # 피벗 테이블 생성
+            pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
+            
+            # [수정] 1. 평균 열 (투표소별 평균) 추가
+            pivot['평균'] = pivot.mean(axis=1)
+            
+            # [수정] 2. 평균 행 (시간대별 평균) 추가 (방금 추가한 평균 열도 포함하여 계산)
+            avg_row = pivot.mean(axis=0)
+            pivot.loc['평균'] = avg_row
+            
+            # [수정] 3. 컬럼 순서 재배치 ('평균'이 제일 앞으로)
+            time_cols = sorted([c for c in pivot.columns if c != '평균'])
+            new_cols = ['평균'] + time_cols
+            pivot = pivot[new_cols]
+            
+            # [수정] 4. 행 순서 재배치 ('평균'이 제일 위로)
+            row_labels = sorted([r for r in pivot.index if r != '평균'])
+            new_rows = ['평균'] + row_labels
+            pivot = pivot.reindex(new_rows)
+            
+            # 히트맵 그리기
+            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, linewidths=.5, vmin=0, vmax=max_val, ax=ax)
+            
+            # 축 설정
+            ax.xaxis.tick_top()
+            ax.xaxis.set_label_position('top')
+            
+            # [수정] 5. X축 눈금 및 라벨 설정
+            # 첫 번째 셀('평균')은 가운데 정렬, 나머지(시간대)는 경계선(Line)에 맞춤
+            
+            # 눈금 위치: 0.5 ('평균' 중앙), 그리고 1부터 끝까지 정수 (시간대 경계선)
+            ticks = [0.5] + list(range(1, len(pivot.columns) + 1))
+            ax.set_xticks(ticks)
+            
+            # 라벨 텍스트: '평균' + 시작시간-1 부터 끝시간까지
+            if time_cols:
+                start_time = int(time_cols[0]) - 1 # 7시 데이터면 6시부터 시작
+                end_time = int(time_cols[-1])
+                labels = ['평균'] + list(range(start_time, end_time + 1))
+                ax.set_xticklabels(labels, rotation=0)
+
+            ax.set_title(f'{day}일차 {type_name} 혼잡도 (시간당 처리인원)', fontsize=14, fontweight='bold', pad=20)
+            ax.set_ylabel('사전투표소(장비수)', fontsize=11, fontweight='bold')
+            ax.set_xlabel('시간대', fontsize=11, fontweight='bold')
 
         if count == 3 and nrows * ncols > 3: axes_flat[3].axis('off')
 
-        plt.suptitle(f"시뮬레이션 결과 - {label_text}\n(녹색: {threshold}명 이상)", fontsize=20, fontweight='bold')
-        plt.tight_layout()
+        plt.suptitle(f"시뮬레이션 결과 - {label_text}", fontsize=20, fontweight='bold')
+        plt.figtext(0.5, 0.02, "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.", ha='center', fontsize=12)
+        plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
         
         img_name = f"시뮬레이션_{timestamp}.png"
         plt.savefig(img_name)
