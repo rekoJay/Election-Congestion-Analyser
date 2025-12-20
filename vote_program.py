@@ -13,6 +13,7 @@ import platform
 import numpy as np 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.colors import ListedColormap 
+from matplotlib.backends.backend_pdf import PdfPages
 
 class ElectionAnalyzerApp:
     def __init__(self, root):
@@ -182,9 +183,6 @@ class ElectionAnalyzerApp:
             self.log(f"장비 파일 로드됨. 목록 업데이트 중...")
             self.scan_stations() 
 
-    def get_column_config(self):
-        return { "equip_cols_idx": [0, 7, 8] }
-
     def scan_stations(self):
         if not self.vote_files:
             return
@@ -222,6 +220,7 @@ class ElectionAnalyzerApp:
         equip_map = {}
         if self.equipment_file:
             try:
+                # [수정] 위험한 get_column_config 제거 및 안전한 로직 적용
                 df_eq = pd.read_excel(self.equipment_file)
                 df_eq.columns = [str(c).replace(" ", "").strip() for c in df_eq.columns]
                 
@@ -232,12 +231,9 @@ class ElectionAnalyzerApp:
                     if '관외' in col and '수' in col: extra_col = col
                 
                 if not (name_col and intra_col and extra_col):
-                    config = self.get_column_config()
-                    cols_idx = config['equip_cols_idx']
-                    raw = pd.read_excel(self.equipment_file, header=None)
-                    df_eq = raw.iloc[2:, cols_idx].copy()
-                    df_eq.columns = ['name', 'intra', 'extra']
-                    name_col, intra_col, extra_col = 'name', 'intra', 'extra'
+                    self.log("오류: 장비 현황 파일에서 필수 열을 찾을 수 없습니다.")
+                    messagebox.showerror("파일 오류", "장비 현황 파일의 헤더를 인식할 수 없습니다.\n('투표소', '관내', '관외' 등의 단어가 포함되어야 합니다.)")
+                    return
 
                 for _, row in df_eq.iterrows():
                     name = str(row[name_col]).strip()
@@ -283,6 +279,7 @@ class ElectionAnalyzerApp:
             
         self.log(f"목록 갱신 완료: 총 {len(sorted_stations)}개 투표소")
 
+    # [복구된 함수] 더블 클릭 이벤트 핸들러
     def on_tree_double_click(self, event):
         item_id = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x) 
@@ -408,8 +405,6 @@ class ElectionAnalyzerApp:
         
         duplicates = final_df[final_df.duplicated(subset=['사전투표소명', '일차', '시간대'], keep=False)]
         if not duplicates.empty:
-            problem_stations = duplicates['사전투표소명'].unique()
-            messagebox.showwarning("중복 데이터 경고", f"중복 데이터가 있습니다 (같은 시간/투표소).\n파일을 중복 선택했는지 확인하세요.\n{problem_stations[:3]}...")
             final_df = final_df.drop_duplicates(subset=['사전투표소명', '일차', '시간대'])
 
         final_df = final_df.sort_values(by=['사전투표소명', '일차', '시간대'])
@@ -444,14 +439,22 @@ class ElectionAnalyzerApp:
         
         self.log("그래프 생성 중...")
         try:
-            self.visualize_results(final_df, timestamp, save_name)
+            # 1. 화면용 긴 이미지 저장
+            self.visualize_results(final_df, timestamp, save_name, mode='screen')
+            # 2. 인쇄용 PDF 저장 (페이지 분할)
+            self.visualize_results(final_df, timestamp, save_name, mode='print')
+            
+            messagebox.showinfo("완료", f"분석 완료!\n\n1. 화면용: 시뮬레이션_{timestamp}.png\n2. 인쇄용: 보고서_{timestamp}.pdf")
+            if platform.system() == 'Windows':
+                try: os.startfile(f"시뮬레이션_{timestamp}.png")
+                except: pass
         except Exception as e:
             self.log(f"시각화 실패: {e}")
             import traceback
             traceback.print_exc()
             messagebox.showerror("오류", str(e))
 
-    def visualize_results(self, df, timestamp, save_name):
+    def visualize_results(self, df, timestamp, save_name, mode='screen'):
         system_name = platform.system()
         font_family = 'Malgun Gothic' if system_name == 'Windows' else 'AppleGothic'
         plt.rc('font', family=font_family)
@@ -468,16 +471,49 @@ class ElectionAnalyzerApp:
         ]
         
         active_scenarios = [s for s in all_scenarios if s[6]]
-        
-        count = len(active_scenarios)
-        if count == 0:
-            messagebox.showwarning("알림", "옵션을 선택해주세요.")
-            return
+        if not active_scenarios: return
 
-        if count == 1: nrows, ncols, figsize = 1, 1, (12, 7)
-        elif count == 2: nrows, ncols, figsize = 1, 2, (20, 7)
-        elif count == 3: nrows, ncols, figsize = 1, 3, (22, 7)
-        else: nrows, ncols, figsize = 2, 2, (20, 14)
+        unique_stations = df['사전투표소명'].unique()
+        total_stations = len(unique_stations)
+        
+        # [모드 분기] 화면용(PNG) vs 인쇄용(PDF)
+        if mode == 'screen':
+            # === 화면용: 길게 한 장으로 ===
+            self._plot_page(df, active_scenarios, unique_stations, f"시뮬레이션_{timestamp}.png", is_pdf=False)
+            
+        elif mode == 'print':
+            # === 인쇄용: PDF (페이지 나누기) ===
+            pdf_name = f"보고서_{timestamp}.pdf"
+            STATIONS_PER_PAGE = 20 # 한 페이지당 투표소 개수
+            
+            with PdfPages(pdf_name) as pdf:
+                for i in range(0, total_stations, STATIONS_PER_PAGE):
+                    batch_stations = unique_stations[i : i + STATIONS_PER_PAGE]
+                    # 해당 페이지에 그릴 데이터만 필터링
+                    batch_df = df[df['사전투표소명'].isin(batch_stations)].copy()
+                    
+                    # 페이지 생성 및 저장
+                    fig = self._plot_page(batch_df, active_scenarios, batch_stations, None, is_pdf=True)
+                    pdf.savefig(fig) 
+                    plt.close(fig)
+            self.log(f"PDF 저장 완료: {pdf_name}")
+
+    def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False):
+        # 내부적으로 사용하는 그리기 함수
+        count = len(scenarios)
+        
+        # 높이 계산 (PDF는 고정 A4 비율 권장, 화면용은 동적)
+        if is_pdf:
+            # A4 Landscape 느낌의 비율 (가로 20, 세로 12 고정)
+            figsize_h = 13 
+        else:
+            # 화면용은 길게 (여백 + 투표소당 높이)
+            figsize_h = max(7, 4 + (len(stations_list) * 0.6))
+
+        if count == 1: nrows, ncols, figsize = 1, 1, (12, figsize_h)
+        elif count == 2: nrows, ncols, figsize = 1, 2, (20, figsize_h)
+        elif count == 3: nrows, ncols, figsize = 1, 3, (22, figsize_h)
+        else: nrows, ncols, figsize = 2, 2, (20, figsize_h * 2) # 2줄이면 높이 2배
 
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
         if count == 1: axes_flat = [axes]
@@ -485,7 +521,7 @@ class ElectionAnalyzerApp:
 
         max_val = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
         
-        for idx, (day, type_name, label_col, value_col, eq_col, org_eq_col, _) in enumerate(active_scenarios):
+        for idx, (day, type_name, label_col, value_col, eq_col, org_eq_col, _) in enumerate(scenarios):
             ax = axes_flat[idx]
             df_day = df[df['일차'] == day]
             
@@ -493,10 +529,11 @@ class ElectionAnalyzerApp:
                 ax.text(0.5, 0.5, '데이터 없음', ha='center', va='center')
                 continue
             
-            # 1. 혼잡도 피벗
             pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
             
-            # [수정] 평균 이름을 빈 문자열로 처리 (라벨 제거)
+            # 평균행 (PDF 페이지별 평균이 아니라, 전체 평균을 보여주고 싶다면 
+            # 외부에서 계산해서 넘겨야 하지만, 여기서는 "해당 페이지 내 평균"이 표기됨)
+            # -> 통일성을 위해 빈 문자열로 평균행 처리
             pivot[''] = pivot.mean(axis=1) 
             avg_row = pivot.mean(axis=0)
             pivot.loc[''] = avg_row
@@ -505,31 +542,27 @@ class ElectionAnalyzerApp:
             new_cols = [''] + time_cols
             pivot = pivot[new_cols]
             
-            row_labels = sorted([r for r in pivot.index if r != ''])
-            new_rows = [''] + row_labels
+            # 투표소 순서 유지 (리스트에 있는 순서대로 정렬)
+            # stations_list에 있는 이름만 추출 (short_name 변환 필요)
+            target_labels = [s.replace('사전투표소','') for s in stations_list]
+            # pivot에 존재하는지 확인 후 정렬
+            valid_labels = [l for l in target_labels if l in pivot.index]
+            new_rows = [''] + valid_labels
             pivot = pivot.reindex(new_rows)
 
-            # 2. 장비 현황 데이터 준비
+            # 장비 데이터
             equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
-            
             annot_labels = []
-            
             for row_label in new_rows:
-                if row_label == '':
-                    annot_labels.append("")
+                if row_label == '': annot_labels.append("")
                 else:
                     try:
                         curr = equip_data.loc[row_label, eq_col]
                         org = equip_data.loc[row_label, org_eq_col]
-                        
-                        if curr != org:
-                            txt = f"{int(org)} → {int(curr)}"
-                        else:
-                            txt = f"{int(curr)}"
-                            
+                        if curr != org: txt = f"{int(org)} → {int(curr)}"
+                        else: txt = f"{int(curr)}"
                         annot_labels.append(txt)
-                    except:
-                        annot_labels.append("?")
+                    except: annot_labels.append("?")
 
             equip_df = pd.DataFrame(0, index=new_rows, columns=['장비']) 
             annot_matrix = pd.DataFrame(annot_labels, index=new_rows, columns=['장비'])
@@ -537,31 +570,26 @@ class ElectionAnalyzerApp:
             divider = make_axes_locatable(ax)
             ax_equip = divider.append_axes("left", size="7%", pad=0.08) 
             
-            # [수정] xticklabels=False로 설정하여 하단 '장비' 글씨 제거
             sns.heatmap(equip_df, annot=annot_matrix, fmt='', 
                         cmap=ListedColormap(['#F0F4F8']), 
                         cbar=False, xticklabels=False,
                         linewidths=0.5, linecolor='white', ax=ax_equip)
             
             ax_equip.set_title("장비수", fontsize=10, fontweight='bold', pad=10)
-            ax_equip.set_xlabel("") # 확실히 비움
+            ax_equip.set_xlabel("")
             ax_equip.set_ylabel("사전투표소", fontsize=11, fontweight='bold')
             ax_equip.tick_params(axis='y', rotation=0)
 
-            # 메인 히트맵
             sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, 
                         linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
             
-            # 파란색 테두리 (평균값 강조)
             rect_row = patches.Rectangle((0, 0), len(pivot.columns), 1, linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
             ax.add_patch(rect_row)
-            
             rect_col = patches.Rectangle((0, 0), 1, len(pivot), linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
             ax.add_patch(rect_col)
 
             ax.set_ylabel("") 
             ax.set_yticks([]) 
-            
             ax.xaxis.tick_top()
             ax.xaxis.set_label_position('top')
             
@@ -571,7 +599,6 @@ class ElectionAnalyzerApp:
             if time_cols:
                 start_time = int(time_cols[0]) - 1
                 end_time = int(time_cols[-1])
-                # [수정] 첫 번째 라벨을 빈 문자열로 ('Av.' 제거)
                 labels = [''] + list(range(start_time, end_time + 1))
                 ax.set_xticklabels(labels, rotation=0)
 
@@ -580,22 +607,19 @@ class ElectionAnalyzerApp:
 
         if count == 3 and nrows * ncols > 3: axes_flat[3].axis('off')
 
-        plt.suptitle(f"사전투표 운용장비 산출 시뮬레이션 결과", fontsize=20, fontweight='bold')
-        
-        plt.figtext(0.5, 0.02, 
+        fig.suptitle(f"사전투표 운용장비 산출 시뮬레이션 결과", fontsize=20, fontweight='bold')
+        fig.text(0.5, 0.02, 
                     "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.\n"
                     "장비 열 표기: [기존] → [변경] / 파란색 테두리: 평균값", 
                     ha='center', fontsize=11, color='gray')
         
         plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
         
-        img_name = f"시뮬레이션_{timestamp}.png"
-        plt.savefig(img_name)
-        
-        messagebox.showinfo("완료", f"시뮬레이션 완료!\n\n📊 {img_name}")
-        if system_name == 'Windows':
-            try: os.startfile(img_name)
-            except: pass
+        if filename and not is_pdf:
+            plt.savefig(filename)
+            plt.close(fig) # PNG 저장 후 닫기
+            
+        return fig # PDF 저장을 위해 figure 객체 반환
 
 if __name__ == "__main__":
     root = tk.Tk()
