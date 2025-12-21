@@ -216,36 +216,55 @@ class ElectionAnalyzerApp:
             except Exception as e:
                 self.log(f"스캔 경고({os.path.basename(file)}): {e}")
 
-        # 장비 파일 읽기
+        # [수정] 사용자 지정 서식(C열:이름, F열:관내, G열:관외) 맞춤 로직
         equip_map = {}
         if self.equipment_file:
             try:
-                # [수정] 위험한 get_column_config 제거 및 안전한 로직 적용
-                df_eq = pd.read_excel(self.equipment_file)
-                df_eq.columns = [str(c).replace(" ", "").strip() for c in df_eq.columns]
-                
-                name_col, intra_col, extra_col = None, None, None
-                for col in df_eq.columns:
-                    if '투표소' in col or '읍면동' in col: name_col = col
-                    if '관내' in col and '수' in col: intra_col = col
-                    if '관외' in col and '수' in col: extra_col = col
-                
-                if not (name_col and intra_col and extra_col):
-                    self.log("오류: 장비 현황 파일에서 필수 열을 찾을 수 없습니다.")
-                    messagebox.showerror("파일 오류", "장비 현황 파일의 헤더를 인식할 수 없습니다.\n('투표소', '관내', '관외' 등의 단어가 포함되어야 합니다.)")
-                    return
+                # 1. 파일 읽기 (헤더 없이 읽음)
+                if self.equipment_file.endswith('.csv'):
+                    try: df_raw = pd.read_csv(self.equipment_file, header=None, encoding='cp949')
+                    except: df_raw = pd.read_csv(self.equipment_file, header=None, encoding='utf-8')
+                else:
+                    df_raw = pd.read_excel(self.equipment_file, header=None)
 
-                for _, row in df_eq.iterrows():
-                    name = str(row[name_col]).strip()
-                    try: intra = int(row[intra_col])
-                    except: intra = 1
-                    try: extra = int(row[extra_col])
-                    except: extra = 1
-                    equip_map[name] = {'intra': intra, 'extra': extra}
+                # 2. 데이터 시작 행 찾기 (C열에 '읍면동'이나 '투표소'가 나오는 줄)
+                start_row_idx = 0
+                for idx, row in df_raw.head(15).iterrows():
+                    # 엑셀 C열은 인덱스 2
+                    c_col_val = str(row[2]).replace(" ", "")
+                    if "읍면동" in c_col_val or "투표소" in c_col_val:
+                        start_row_idx = idx + 1 # 헤더 다음 줄부터 데이터
+                        break
                 
-                self.log(f"장비 파일 인식 성공: {len(equip_map)}개")
+                # 3. 데이터 추출 (C열=2, F열=5, G열=6)
+                for idx in range(start_row_idx, len(df_raw)):
+                    row = df_raw.iloc[idx]
+                    
+                    # C열: 투표소명
+                    st_name = str(row[2]).strip()
+                    if st_name == 'nan' or not st_name: continue
+                    if '합계' in st_name or '소계' in st_name: continue
+
+                    # 숫자 정제 함수
+                    def parse_count(val):
+                        try:
+                            txt = str(val).split('(')[0].replace(',', '').replace('대', '').strip()
+                            return int(float(txt))
+                        except:
+                            return 1 
+
+                    # F열(5): 관내 장비수, G열(6): 관외 장비수
+                    intra_count = parse_count(row[5])
+                    extra_count = parse_count(row[6])
+
+                    equip_map[st_name] = {'intra': intra_count, 'extra': extra_count}
+
+                self.log(f"장비 파일 로드 완료: {len(equip_map)}개소 (C,F,G열 기준)")
+
             except Exception as e:
                 self.log(f"장비 파일 읽기 오류: {e}")
+                import traceback
+                traceback.print_exc()
 
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -534,27 +553,31 @@ class ElectionAnalyzerApp:
             # 평균행 (PDF 페이지별 평균이 아니라, 전체 평균을 보여주고 싶다면 
             # 외부에서 계산해서 넘겨야 하지만, 여기서는 "해당 페이지 내 평균"이 표기됨)
             # -> 통일성을 위해 빈 문자열로 평균행 처리
-            pivot[''] = pivot.mean(axis=1) 
-            avg_row = pivot.mean(axis=0)
-            pivot.loc[''] = avg_row
+            # === [수정됨] 평균 행/열 생성 및 텍스트 수동 배치 코드 시작 ===
             
-            time_cols = sorted([c for c in pivot.columns if c != ''])
-            new_cols = [''] + time_cols
+            # 1. 평균 계산 (라벨을 빈 문자열 ''로 설정하여 Y축 이름이 안 겹치게 함)
+            avg_label = '' 
+            pivot[avg_label] = pivot.mean(axis=1) 
+            avg_row = pivot.mean(axis=0)
+            pivot.loc[avg_label] = avg_row
+            
+            # 2. 정렬 (평균을 맨 앞으로)
+            time_cols = sorted([c for c in pivot.columns if c != avg_label])
+            new_cols = [avg_label] + time_cols
             pivot = pivot[new_cols]
             
-            # 투표소 순서 유지 (리스트에 있는 순서대로 정렬)
-            # stations_list에 있는 이름만 추출 (short_name 변환 필요)
             target_labels = [s.replace('사전투표소','') for s in stations_list]
-            # pivot에 존재하는지 확인 후 정렬
             valid_labels = [l for l in target_labels if l in pivot.index]
-            new_rows = [''] + valid_labels
+            new_rows = [avg_label] + valid_labels
             pivot = pivot.reindex(new_rows)
 
-            # 장비 데이터
+            # 3. 장비 데이터 준비
             equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
             annot_labels = []
+            
             for row_label in new_rows:
-                if row_label == '': annot_labels.append("")
+                if row_label == avg_label:
+                    annot_labels.append("") # 텍스트를 수동으로 넣기 위해 빈칸으로 둠
                 else:
                     try:
                         curr = equip_data.loc[row_label, eq_col]
@@ -564,24 +587,60 @@ class ElectionAnalyzerApp:
                         annot_labels.append(txt)
                     except: annot_labels.append("?")
 
-            equip_df = pd.DataFrame(0, index=new_rows, columns=['장비']) 
+            # [수정] 데이터프레임 생성 시 값 구분 (1: 데이터 행, 0: 헤더 행)
+            equip_df = pd.DataFrame(1, index=new_rows, columns=['장비']) 
+            equip_df.iloc[0] = 0 # 첫 번째 행(헤더)은 0으로 설정
+
             annot_matrix = pd.DataFrame(annot_labels, index=new_rows, columns=['장비'])
 
             divider = make_axes_locatable(ax)
             ax_equip = divider.append_axes("left", size="7%", pad=0.08) 
             
+            # [수정] 컬러맵 정의: 0 -> 흰색(헤더), 1 -> 연회색(데이터)
+            custom_cmap = ListedColormap(['white', '#F0F4F8'])
+
+            # 4. 왼쪽 장비수 히트맵 (vmin=0, vmax=1로 색상 고정)
             sns.heatmap(equip_df, annot=annot_matrix, fmt='', 
-                        cmap=ListedColormap(['#F0F4F8']), 
+                        cmap=custom_cmap, vmin=0, vmax=1,
                         cbar=False, xticklabels=False,
                         linewidths=0.5, linecolor='white', ax=ax_equip)
             
-            ax_equip.set_title("장비수", fontsize=10, fontweight='bold', pad=10)
             ax_equip.set_xlabel("")
             ax_equip.set_ylabel("사전투표소", fontsize=11, fontweight='bold')
-            ax_equip.tick_params(axis='y', rotation=0)
+            # [수정] length=0 을 추가하여 이름 옆의 눈금(-) 표시 제거
+            ax_equip.tick_params(axis='y', rotation=0, length=0)
 
+            # [텍스트 추가 1] 왼쪽 바닥 중앙 "장비수" (x=0.5, y=0.95)
+            ax_equip.text(0.5, 0.95, "장비수", 
+                         ha='center', va='bottom', 
+                         fontsize=10, fontweight='bold', color='black')
+
+            # 5. 오른쪽 메인 히트맵
             sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, 
                         linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
+            
+            # [수정 1] 왼쪽 바닥 중앙 "장비수"
+            ax_equip.text(0.5, 0.95, "장비수", 
+                         ha='center', va='bottom', 
+                         fontsize=10, fontweight='bold', color='black')
+
+            # [수정 2] "시간대별 평균 →" 라벨을 장비 그래프(ax_equip) 영역 안으로 이동
+            # 이렇게 하면 왼쪽으로 잘리지 않고, 장비수 칸 안에서 오른쪽을 가리키게 됩니다.
+            # x=0.95 (장비칸의 오른쪽 끝), y=0.5 (첫 번째 행의 중앙)
+            ax_equip.text(0.95, 0.5, "시간대별 평균 →", 
+                         ha='right', va='center', 
+                         fontsize=9, fontweight='bold', color='#3B5BDB')
+
+            # 5. 오른쪽 메인 히트맵
+            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, 
+                        linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
+            
+            # [수정 3] 글자가 길어 숫자 '6'을 가리는 문제 해결 -> 두 줄로 분리
+            # "↓ 투표소별" (윗줄) / "평균" (아랫줄)
+            ax.text(0.5, -0.2, "↓ 투표소별\n평균", 
+                    ha='center', va='bottom', 
+                    fontsize=10, fontweight='bold', color='#3B5BDB',
+                    clip_on=False)
             
             rect_row = patches.Rectangle((0, 0), len(pivot.columns), 1, linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
             ax.add_patch(rect_row)
@@ -593,6 +652,9 @@ class ElectionAnalyzerApp:
             ax.xaxis.tick_top()
             ax.xaxis.set_label_position('top')
             
+            # [수정] X축(시간대) 눈금(-) 길이 0으로 설정하여 제거
+            ax.tick_params(axis='x', length=0)
+
             ticks = [0.5] + list(range(1, len(pivot.columns) + 1))
             ax.set_xticks(ticks)
             
