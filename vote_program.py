@@ -186,7 +186,9 @@ class ElectionAnalyzerApp:
         if not self.vote_files:
             return
 
-        station_set = set()
+        # (새로 넣을 코드)
+        station_list = []  # 순서 유지를 위한 리스트
+        seen = set()       # 중복 체크를 위한 집합
         
         for file in self.vote_files:
             try:
@@ -210,7 +212,10 @@ class ElectionAnalyzerApp:
                     for s in stations:
                         s_str = str(s).strip()
                         if s_str and s_str != 'nan':
-                            station_set.add(s_str)
+                            # [수정] 순서를 유지하면서 중복만 제거
+                            if s_str not in seen:
+                                seen.add(s_str)
+                                station_list.append(s_str)
                             
             except Exception as e:
                 self.log(f"스캔 경고({os.path.basename(file)}): {e}")
@@ -268,7 +273,7 @@ class ElectionAnalyzerApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
         
-        sorted_stations = sorted(list(station_set))
+        sorted_stations = station_list
         self.station_data = {} 
         current_global_rate = int(self.var_rate.get())
 
@@ -420,6 +425,27 @@ class ElectionAnalyzerApp:
             return
 
         final_df = pd.concat(all_data, ignore_index=True)
+
+        # [추가] 1. 원본 엑셀에 등장한 투표소 순서 추출 (중복 제거하되 순서 유지)
+        original_order = []
+        seen = set()
+        
+        # 읽어들인 데이터프레임들을 순회하며 투표소 등장 순서 수집
+        for temp_df in all_data:
+            # 해당 파일에 있는 투표소명들 (순서 유지됨)
+            stats = temp_df['사전투표소명'].unique()
+            for s in stats:
+                if s not in seen:
+                    seen.add(s)
+                    original_order.append(s)
+        
+        # [추가] 2. '사전투표소명' 컬럼을 단순 글자가 아니라 '순서가 있는 카테고리'로 변환
+        # 이렇게 하면 나중에 sort_values를 해도 가나다순이 아니라 위에서 만든 순서대로 정렬됨
+        final_df['사전투표소명'] = pd.Categorical(
+            final_df['사전투표소명'], 
+            categories=original_order, 
+            ordered=True
+        )
         
         duplicates = final_df[final_df.duplicated(subset=['사전투표소명', '일차', '시간대'], keep=False)]
         if not duplicates.empty:
@@ -451,18 +477,29 @@ class ElectionAnalyzerApp:
         final_df['관외_혼잡도'] = final_df['시간대별_관외투표자수'] / final_df['관외장비수']
         
         timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        save_name = f"시뮬레이션_결과_{timestamp}.xlsx"
-        final_df.to_excel(save_name, index=False)
-        self.log(f"엑셀 저장 완료: {save_name}")
+
+        # [수정] 현재 py 파일이 있는 '진짜' 폴더 경로 찾기
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 1. 엑셀 저장 (경로 결합)
+        excel_name = f"시뮬레이션_결과_{timestamp}.xlsx"
+        full_excel_path = os.path.join(script_dir, excel_name)
+
+        final_df.to_excel(full_excel_path, index=False)
+        self.log(f"엑셀 저장 완료: {full_excel_path}")
         
         self.log("그래프 생성 중...")
         try:
-            # 1. 화면용 긴 이미지 저장
-            self.visualize_results(final_df, timestamp, save_name, mode='screen')
+            # 2. 이미지 저장 (경로 결합)
+            png_name = f"시뮬레이션_{timestamp}.png"
+            full_png_path = os.path.join(script_dir, png_name)
+
+            # [핵심] visualize_results에 우리가 만든 '전체 경로'를 넘겨줌
+            self.visualize_results(final_df, timestamp, full_png_path, mode='screen')
             
-            messagebox.showinfo("완료", f"분석 완료!\n\n결과 이미지가 저장되었습니다:\n시뮬레이션_{timestamp}.png")
+            messagebox.showinfo("완료", f"분석 완료!\n\n파일이 저장되었습니다:\n{full_png_path}")
             if platform.system() == 'Windows':
-                try: os.startfile(f"시뮬레이션_{timestamp}.png")
+                try: os.startfile(full_png_path)
                 except: pass
         except Exception as e:
             self.log(f"시각화 실패: {e}")
@@ -495,7 +532,7 @@ class ElectionAnalyzerApp:
         # [모드 분기] 화면용(PNG) vs 인쇄용(PDF)
         if mode == 'screen':
             # === 화면용: 길게 한 장으로 ===
-            self._plot_page(df, active_scenarios, unique_stations, f"시뮬레이션_{timestamp}.png", is_pdf=False)
+            self._plot_page(df, active_scenarios, unique_stations, save_name, is_pdf=False)
 
     def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False):
         # 내부적으로 사용하는 그리기 함수
