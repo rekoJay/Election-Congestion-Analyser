@@ -13,7 +13,6 @@ import platform
 import numpy as np 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.colors import ListedColormap 
-from matplotlib.backends.backend_pdf import PdfPages
 
 class ElectionAnalyzerApp:
     def __init__(self, root):
@@ -460,10 +459,8 @@ class ElectionAnalyzerApp:
         try:
             # 1. 화면용 긴 이미지 저장
             self.visualize_results(final_df, timestamp, save_name, mode='screen')
-            # 2. 인쇄용 PDF 저장 (페이지 분할)
-            self.visualize_results(final_df, timestamp, save_name, mode='print')
             
-            messagebox.showinfo("완료", f"분석 완료!\n\n1. 화면용: 시뮬레이션_{timestamp}.png\n2. 인쇄용: 보고서_{timestamp}.pdf")
+            messagebox.showinfo("완료", f"분석 완료!\n\n결과 이미지가 저장되었습니다:\n시뮬레이션_{timestamp}.png")
             if platform.system() == 'Windows':
                 try: os.startfile(f"시뮬레이션_{timestamp}.png")
                 except: pass
@@ -499,23 +496,6 @@ class ElectionAnalyzerApp:
         if mode == 'screen':
             # === 화면용: 길게 한 장으로 ===
             self._plot_page(df, active_scenarios, unique_stations, f"시뮬레이션_{timestamp}.png", is_pdf=False)
-            
-        elif mode == 'print':
-            # === 인쇄용: PDF (페이지 나누기) ===
-            pdf_name = f"보고서_{timestamp}.pdf"
-            STATIONS_PER_PAGE = 20 # 한 페이지당 투표소 개수
-            
-            with PdfPages(pdf_name) as pdf:
-                for i in range(0, total_stations, STATIONS_PER_PAGE):
-                    batch_stations = unique_stations[i : i + STATIONS_PER_PAGE]
-                    # 해당 페이지에 그릴 데이터만 필터링
-                    batch_df = df[df['사전투표소명'].isin(batch_stations)].copy()
-                    
-                    # 페이지 생성 및 저장
-                    fig = self._plot_page(batch_df, active_scenarios, batch_stations, None, is_pdf=True)
-                    pdf.savefig(fig) 
-                    plt.close(fig)
-            self.log(f"PDF 저장 완료: {pdf_name}")
 
     def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False):
         # 내부적으로 사용하는 그리기 함수
