@@ -1,11 +1,11 @@
+import sys
 import pandas as pd
 import re
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, simpledialog
 from datetime import datetime
-
-# 시각화 및 시스템 관련
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import seaborn as sns
@@ -22,6 +22,7 @@ class ElectionAnalyzerApp:
         self.root.resizable(False, True) 
         
         self.vote_files = []
+        self.cached_data = {} # [최적화] 읽어들인 데이터를 메모리에 저장 (경로: (df, day, time))
         self.equipment_file = None
         
         # 데이터 구조: { '투표소명': {'intra': 1, 'extra': 1, 'rate': 0.0, 'org_intra': 1, 'org_extra': 1} }
@@ -138,11 +139,12 @@ class ElectionAnalyzerApp:
         self.log_text.pack(fill="both", expand=True)
 
     def log(self, msg):
-        self.log_text.config(state='normal')
-        self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
-        self.log_text.see(tk.END)
-        self.log_text.config(state='disabled')
-        self.root.update()
+        def _update():
+            self.log_text.config(state='normal')
+            self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}\n")
+            self.log_text.see(tk.END)
+            self.log_text.config(state='disabled')
+        self.root.after(0, _update)
 
     def on_slider_change(self, val):
         rate = int(float(val))
@@ -170,9 +172,10 @@ class ElectionAnalyzerApp:
         files = filedialog.askopenfilenames(title="투표 데이터 선택", filetypes=[("Excel/CSV Files", "*.xlsx *.xls *.csv")])
         if files:
             self.vote_files = files
+            self.cached_data = {} # [최적화] 새 파일 선택 시 캐시 초기화
             self.lbl_file_count.config(text=f"✅ {len(files)}개 파일 로드됨", foreground="blue")
-            self.log(f"{len(files)}개 파일 선택됨. 투표소 목록 스캔 시작...")
-            self.scan_stations() 
+            self.log(f"{len(files)}개 파일 선택됨. 데이터 로드 및 스캔 시작...")
+            self.scan_stations()
 
     def select_equip_file(self):
         file = filedialog.askopenfilename(title="장비현황 파일 선택", filetypes=[("Excel Files", "*.xlsx *.xls")])
@@ -182,43 +185,62 @@ class ElectionAnalyzerApp:
             self.log(f"장비 파일 로드됨. 목록 업데이트 중...")
             self.scan_stations() 
 
-    def scan_stations(self):
-        if not self.vote_files:
-            return
-
-        # (새로 넣을 코드)
-        station_list = []  # 순서 유지를 위한 리스트
-        seen = set()       # 중복 체크를 위한 집합
-        
+    def _ensure_data_loaded(self):
+        # [최적화] 파일이 캐시에 없으면 읽어서 저장
         for file in self.vote_files:
-            try:
-                _, _, header_row = self.get_file_info_header(file)
+            if file in self.cached_data:
+                continue
                 
+            try:
+                day, time, header_row = self.get_file_info_header(file)
+                if day is None: continue
+
                 if file.endswith('.csv'):
                     try: df = pd.read_csv(file, header=header_row, encoding='cp949')
                     except: df = pd.read_csv(file, header=header_row, encoding='utf-8')
                 else:
                     df = pd.read_excel(file, header=header_row)
-                
+
                 if '사전투표소명' in df.columns:
                     df = df.dropna(subset=['사전투표소명'])
-                    
+                    # 공통 전처리: 합계/소계 제거
                     if '읍면동명' in df.columns:
                         temp_col = df['읍면동명'].astype(str).str.replace(' ', '')
                         mask = temp_col.str.contains('합계|소계|총계|누계', na=False)
-                        df = df[~mask]
+                        df = df[~mask].copy()
+                    
+                    # 숫자 변환 미리 수행
+                    for col in ['관내사전투표자수', '관외사전투표자수']:
+                        if col in df.columns and df[col].dtype == 'object':
+                            df[col] = df[col].astype(str).str.replace(',', '').str.strip()
+                            df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                    stations = df['사전투표소명'].unique()
-                    for s in stations:
-                        s_str = str(s).strip()
-                        if s_str and s_str != 'nan':
-                            # [수정] 순서를 유지하면서 중복만 제거
-                            if s_str not in seen:
-                                seen.add(s_str)
-                                station_list.append(s_str)
-                            
+                    self.cached_data[file] = (df, day, time)
             except Exception as e:
-                self.log(f"스캔 경고({os.path.basename(file)}): {e}")
+                self.log(f"파일 로드 실패({os.path.basename(file)}): {e}")
+
+    def scan_stations(self):
+        if not self.vote_files:
+            return
+
+        self._ensure_data_loaded() # [최적화] 데이터 로드 보장
+
+        station_list = []  
+        seen = set()       
+        
+        # 캐시된 데이터에서 투표소 추출
+        for file in self.vote_files:
+            if file not in self.cached_data: continue
+            
+            df, _, _ = self.cached_data[file]
+            stations = df['사전투표소명'].unique()
+            
+            for s in stations:
+                s_str = str(s).strip()
+                if s_str and s_str != 'nan':
+                    if s_str not in seen:
+                        seen.add(s_str)
+                        station_list.append(s_str)
 
         # [수정] 사용자 지정 서식(C열:이름, F열:관내, G열:관외) 맞춤 로직
         equip_map = {}
@@ -369,143 +391,151 @@ class ElectionAnalyzerApp:
             messagebox.showwarning("주의", "투표 데이터 파일이 없습니다.")
             return
 
-        label = "통합 분석"
-
-        self.log(f"시뮬레이션 시작: {label}")
-        all_data = []
+        # 1. 로딩 팝업창 생성
+        self.loading_win = tk.Toplevel(self.root)
+        self.loading_win.title("처리 중")
+        self.loading_win.geometry("300x100")
+        self.loading_win.resizable(False, False)
+        # 팝업이 떠 있는 동안 메인 창 조작 금지 (모달)
+        self.loading_win.grab_set() 
         
-        for file in self.vote_files:
-            try:
-                day, time, header_row = self.get_file_info_header(file)
-                if day is None: continue
-                
-                if file.endswith('.csv'):
-                    try: df = pd.read_csv(file, header=header_row, encoding='cp949')
-                    except: df = pd.read_csv(file, header=header_row, encoding='utf-8')
-                else:
-                    df = pd.read_excel(file, header=header_row)
+        # 화면 중앙 배치
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 150
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 50
+        self.loading_win.geometry(f"+{x}+{y}")
 
-                if '사전투표소명' not in df.columns: continue
-                
-                df = df.dropna(subset=['사전투표소명'])
-                
-                if '읍면동명' in df.columns:
-                    temp_col = df['읍면동명'].astype(str).str.replace(' ', '')
-                    mask = temp_col.str.contains('합계|소계|총계|누계', na=False)
-                    df = df[~mask].copy()
-                
-                df['사전투표소명'] = df['사전투표소명'].astype(str).str.strip()
-
-                for col in ['관내사전투표자수', '관외사전투표자수']:
-                    if col in df.columns:
-                        if df[col].dtype == 'object':
-                            df[col] = df[col].astype(str).str.replace(',', '').str.strip()
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-                def apply_rate(row, col_name):
-                    st = row['사전투표소명']
-                    original_val = row[col_name]
-                    rate = 0
-                    if st in self.station_data:
-                        rate = self.station_data[st]['rate']
-                    factor = 1 + (rate / 100.0)
-                    return original_val * factor
-
-                df['관내사전투표자수'] = df.apply(lambda x: apply_rate(x, '관내사전투표자수'), axis=1)
-                df['관외사전투표자수'] = df.apply(lambda x: apply_rate(x, '관외사전투표자수'), axis=1)
-                        
-                df['일차'] = day
-                df['시간대'] = time
-                all_data.append(df)
-            except Exception as e:
-                self.log(f"데이터 처리 오류({os.path.basename(file)}): {e}")
-
-        if not all_data:
-            messagebox.showerror("오류", "유효한 데이터가 없습니다. 로그를 확인해주세요.")
-            return
-
-        final_df = pd.concat(all_data, ignore_index=True)
-
-        # [추가] 1. 원본 엑셀에 등장한 투표소 순서 추출 (중복 제거하되 순서 유지)
-        original_order = []
-        seen = set()
+        lbl = ttk.Label(self.loading_win, text="데이터 분석 및 시각화 중입니다...\n잠시만 기다려 주세요.", justify="center")
+        lbl.pack(pady=20)
         
-        # 읽어들인 데이터프레임들을 순회하며 투표소 등장 순서 수집
-        for temp_df in all_data:
-            # 해당 파일에 있는 투표소명들 (순서 유지됨)
-            stats = temp_df['사전투표소명'].unique()
-            for s in stats:
-                if s not in seen:
-                    seen.add(s)
-                    original_order.append(s)
-        
-        # [추가] 2. '사전투표소명' 컬럼을 단순 글자가 아니라 '순서가 있는 카테고리'로 변환
-        # 이렇게 하면 나중에 sort_values를 해도 가나다순이 아니라 위에서 만든 순서대로 정렬됨
-        final_df['사전투표소명'] = pd.Categorical(
-            final_df['사전투표소명'], 
-            categories=original_order, 
-            ordered=True
-        )
-        
-        duplicates = final_df[final_df.duplicated(subset=['사전투표소명', '일차', '시간대'], keep=False)]
-        if not duplicates.empty:
-            final_df = final_df.drop_duplicates(subset=['사전투표소명', '일차', '시간대'])
+        # 프로그레스바 (왔다갔다 하는 모드)
+        pb = ttk.Progressbar(self.loading_win, mode='indeterminate')
+        pb.pack(fill="x", padx=20, pady=(0, 20))
+        pb.start(10)
 
-        final_df = final_df.sort_values(by=['사전투표소명', '일차', '시간대'])
-        
-        final_df['시간대별_관내투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관내사전투표자수'].diff()
-        final_df['시간대별_관외투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관외사전투표자수'].diff()
-        
-        mask_start = final_df['시간대'] == 7
-        final_df.loc[mask_start, '시간대별_관내투표자수'] = final_df.loc[mask_start, '관내사전투표자수']
-        final_df.loc[mask_start, '시간대별_관외투표자수'] = final_df.loc[mask_start, '관외사전투표자수']
+        # 2. 별도 스레드에서 무거운 작업 실행
+        # daemon=True로 설정하여 메인 프로그램 종료 시 같이 종료되게 함
+        t = threading.Thread(target=self._execute_simulation, daemon=True)
+        t.start()
 
-        def get_equip_info(row, type_):
-            st = row['사전투표소명']
-            if st in self.station_data:
-                return self.station_data[st][type_], self.station_data[st][f'org_{type_}']
-            return 1, 1
-
-        final_df[['관내장비수', '원본_관내장비수']] = final_df.apply(
-            lambda x: pd.Series(get_equip_info(x, 'intra')), axis=1
-        )
-        final_df[['관외장비수', '원본_관외장비수']] = final_df.apply(
-            lambda x: pd.Series(get_equip_info(x, 'extra')), axis=1
-        )
-
-        final_df['관내_혼잡도'] = final_df['시간대별_관내투표자수'] / final_df['관내장비수']
-        final_df['관외_혼잡도'] = final_df['시간대별_관외투표자수'] / final_df['관외장비수']
-        
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-
-        # [수정] 현재 py 파일이 있는 '진짜' 폴더 경로 찾기
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # 1. 엑셀 저장 (경로 결합)
-        excel_name = f"시뮬레이션_결과_{timestamp}.xlsx"
-        full_excel_path = os.path.join(script_dir, excel_name)
-
-        final_df.to_excel(full_excel_path, index=False)
-        self.log(f"엑셀 저장 완료: {full_excel_path}")
-        
-        self.log("그래프 생성 중...")
+    def _execute_simulation(self):
+        # [실제 작업 로직] 기존 run_simulation 내용을 이곳으로 이동
         try:
-            # 2. 이미지 저장 (경로 결합)
+            label = "통합 분석"
+            self.log(f"시뮬레이션 시작: {label}")
+            
+            # 메인 스레드가 아닌 곳에서 GUI를 업데이트 하려면 invoke나 after를 써야 하지만,
+            # 데이터 로드와 계산은 백그라운드에서 안전하게 수행됨.
+            self._ensure_data_loaded() 
+            
+            all_data = []
+            
+            for file in self.vote_files:
+                if file not in self.cached_data: continue
+                
+                try:
+                    org_df, day, time = self.cached_data[file]
+                    df = org_df.copy() 
+                    
+                    df['사전투표소명'] = df['사전투표소명'].astype(str).str.strip()
+                    
+                    rate_map = {name: data.get('rate', 0) for name, data in self.station_data.items()}
+                    rates = df['사전투표소명'].map(rate_map).fillna(0)
+                    factor = 1 + (rates / 100.0)
+                    
+                    df['관내사전투표자수'] = df['관내사전투표자수'] * factor
+                    df['관외사전투표자수'] = df['관외사전투표자수'] * factor
+                            
+                    df['일차'] = day
+                    df['시간대'] = time
+                    all_data.append(df)
+                except Exception as e:
+                    self.log(f"데이터 처리 오류({os.path.basename(file)}): {e}")
+
+            if not all_data:
+                self.root.after(0, lambda: messagebox.showerror("오류", "유효한 데이터가 없습니다."))
+                self.root.after(0, self.loading_win.destroy)
+                return
+
+            final_df = pd.concat(all_data, ignore_index=True)
+
+            original_order = []
+            seen = set()
+            for temp_df in all_data:
+                stats = temp_df['사전투표소명'].unique()
+                for s in stats:
+                    if s not in seen:
+                        seen.add(s)
+                        original_order.append(s)
+            
+            final_df['사전투표소명'] = pd.Categorical(
+                final_df['사전투표소명'], categories=original_order, ordered=True
+            )
+            
+            duplicates = final_df[final_df.duplicated(subset=['사전투표소명', '일차', '시간대'], keep=False)]
+            if not duplicates.empty:
+                final_df = final_df.drop_duplicates(subset=['사전투표소명', '일차', '시간대'])
+
+            final_df = final_df.sort_values(by=['사전투표소명', '일차', '시간대'])
+            
+            final_df['시간대별_관내투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관내사전투표자수'].diff()
+            final_df['시간대별_관외투표자수'] = final_df.groupby(['사전투표소명', '일차'])['관외사전투표자수'].diff()
+            
+            mask_start = final_df['시간대'] == 7
+            final_df.loc[mask_start, '시간대별_관내투표자수'] = final_df.loc[mask_start, '관내사전투표자수']
+            final_df.loc[mask_start, '시간대별_관외투표자수'] = final_df.loc[mask_start, '관외사전투표자수']
+
+            def get_equip_info(row, type_):
+                st = row['사전투표소명']
+                if st in self.station_data:
+                    return self.station_data[st][type_], self.station_data[st][f'org_{type_}']
+                return 1, 1
+
+            final_df[['관내장비수', '원본_관내장비수']] = final_df.apply(lambda x: pd.Series(get_equip_info(x, 'intra')), axis=1)
+            final_df[['관외장비수', '원본_관외장비수']] = final_df.apply(lambda x: pd.Series(get_equip_info(x, 'extra')), axis=1)
+
+            final_df['관내_혼잡도'] = final_df['시간대별_관내투표자수'] / final_df['관내장비수']
+            final_df['관외_혼잡도'] = final_df['시간대별_관외투표자수'] / final_df['관외장비수']
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            # [수정] exe로 실행될 때와 파이썬 스크립트로 실행될 때의 경로 차이 해결
+            if getattr(sys, 'frozen', False):
+                # exe 실행 시: 실행 파일이 있는 위치를 저장 경로로 설정
+                script_dir = os.path.dirname(os.path.abspath(sys.executable))
+            else:
+                # 코드 실행 시: 파일이 있는 위치 설정
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+
+            excel_name = f"시뮬레이션_결과_{timestamp}.xlsx"
+            full_excel_path = os.path.join(script_dir, excel_name)
+
+            final_df.to_excel(full_excel_path, index=False)
+            self.log(f"엑셀 저장 완료: {full_excel_path}")
+            
+            self.log("그래프 생성 중...")
+            
             png_name = f"시뮬레이션_{timestamp}.png"
             full_png_path = os.path.join(script_dir, png_name)
 
-            # [핵심] visualize_results에 우리가 만든 '전체 경로'를 넘겨줌
             self.visualize_results(final_df, timestamp, full_png_path, mode='screen')
             
-            messagebox.showinfo("완료", f"분석 완료!\n\n파일이 저장되었습니다:\n{full_png_path}")
-            if platform.system() == 'Windows':
-                try: os.startfile(full_png_path)
-                except: pass
+            def _finish():
+                self.loading_win.destroy() # 로딩창 닫기
+                messagebox.showinfo("완료", f"분석 완료!\n\n파일이 저장되었습니다:\n{full_png_path}")
+                if platform.system() == 'Windows':
+                    try: os.startfile(full_png_path)
+                    except: pass
+            
+            self.root.after(0, _finish)
+
         except Exception as e:
-            self.log(f"시각화 실패: {e}")
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("오류", str(e))
+            # 에러 발생 시 처리
+            def _error():
+                if hasattr(self, 'loading_win'): self.loading_win.destroy()
+                self.log(f"치명적 오류: {e}")
+                import traceback
+                traceback.print_exc()
+                messagebox.showerror("오류", f"작업 중 오류가 발생했습니다.\n{e}")
+            self.root.after(0, _error)
 
     def visualize_results(self, df, timestamp, save_name, mode='screen'):
         system_name = platform.system()
@@ -529,7 +559,6 @@ class ElectionAnalyzerApp:
         unique_stations = df['사전투표소명'].unique()
         total_stations = len(unique_stations)
         
-        # [모드 분기] 화면용(PNG) vs 인쇄용(PDF)
         if mode == 'screen':
             # === 화면용: 길게 한 장으로 ===
             self._plot_page(df, active_scenarios, unique_stations, save_name, is_pdf=False)
@@ -567,9 +596,7 @@ class ElectionAnalyzerApp:
             
             pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
             
-            # 평균행 (PDF 페이지별 평균이 아니라, 전체 평균을 보여주고 싶다면 
-            # 외부에서 계산해서 넘겨야 하지만, 여기서는 "해당 페이지 내 평균"이 표기됨)
-            # -> 통일성을 위해 빈 문자열로 평균행 처리
+
             # === [수정됨] 평균 행/열 생성 및 텍스트 수동 배치 코드 시작 ===
             
             # 1. 평균 계산 (라벨을 빈 문자열 ''로 설정하여 Y축 이름이 안 겹치게 함)
