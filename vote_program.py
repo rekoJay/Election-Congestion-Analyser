@@ -24,6 +24,8 @@ class ElectionAnalyzerApp:
         self.vote_files = []
         self.cached_data = {} # [최적화] 읽어들인 데이터를 메모리에 저장 (경로: (df, day, time))
         self.equipment_file = None
+
+        self.last_reserve_count = 5
         
         # 데이터 구조: { '투표소명': {'intra': 1, 'extra': 1, 'rate': 0.0, 'org_intra': 1, 'org_extra': 1} }
         self.station_data = {} 
@@ -81,8 +83,14 @@ class ElectionAnalyzerApp:
         self.lbl_rate.pack(side="right")
 
         # 2-2. 장비 및 개별 증가율 리스트
-        ttk.Label(frame_sim, text="📋 투표소별 설정 (수정할 항목을 더블클릭하세요)", font=("맑은 고딕", 9, "bold")).pack(anchor="w")
-        
+        # [추가] 오토 밸런싱 버튼 영역
+        frame_balance = ttk.Frame(frame_sim)
+        frame_balance.pack(fill="x", pady=(0, 5))
+
+        ttk.Label(frame_balance, text="📋 투표소별 설정 (수정: 더블클릭)", font=("맑은 고딕", 9, "bold")).pack(side="left")
+        btn_balance = ttk.Button(frame_balance, text="⚖️ 장비 자동 배분 (Auto-Balancing)", command=self.open_balance_popup)
+        btn_balance.pack(side="right")
+
         tree_frame = ttk.Frame(frame_sim)
         tree_frame.pack(fill="both", expand=True, pady=5)
         
@@ -562,6 +570,168 @@ class ElectionAnalyzerApp:
         if mode == 'screen':
             # === 화면용: 길게 한 장으로 ===
             self._plot_page(df, active_scenarios, unique_stations, save_name, is_pdf=False)
+    
+    def open_balance_popup(self):
+        if not self.vote_files:
+            messagebox.showwarning("주의", "먼저 투표 데이터 파일을 로드해주세요.")
+            return
+            
+        # 현재 화면에 등록된 총 장비 수 합산 (기본값 제공용)
+        curr_total = sum([item['intra'] + item['extra'] for item in self.station_data.values()])
+        
+        # 팝업창 생성
+        pop = tk.Toplevel(self.root)
+        pop.title("장비 자동 배분 (통합 모드)")
+        pop.geometry("350x280") 
+        pop.resizable(False, False)
+        
+        # 화면 중앙 배치
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 175
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 140
+        pop.geometry(f"+{x}+{y}")
+        
+        ttk.Label(pop, text="보유한 [전체 장비 수]를 입력하세요.\n관내/관외 구분 없이 혼잡도에 따라 통합 배분합니다.", 
+                  justify="center", foreground="gray").pack(pady=15)
+        
+        frame_input = ttk.Frame(pop, padding="20")
+        frame_input.pack(fill="both", expand=True)
+        
+        # 입력 필드 생성 함수
+        def create_entry(parent, label, default_val):
+            frame = ttk.Frame(parent)
+            frame.pack(fill="x", pady=8)
+            ttk.Label(frame, text=label, width=15, font=("맑은 고딕", 10, "bold")).pack(side="left")
+            entry = ttk.Entry(frame, justify="right", font=("맑은 고딕", 10))
+            entry.insert(0, str(default_val))
+            entry.pack(side="right", expand=True, fill="x")
+            return entry
+            
+        entry_total = create_entry(frame_input, "총 보유 장비:", curr_total)
+        
+        # [▼ 변경된 부분] 고정값 5 대신 기억해둔 값(self.last_reserve_count)을 사용
+        entry_reserve = create_entry(frame_input, "예비 장비:", self.last_reserve_count) 
+        
+        def _run():
+            try:
+                total_assets = int(entry_total.get())
+                total_reserve = int(entry_reserve.get())
+                
+                # [▼ 추가된 부분] 입력한 예비 장비 수를 변수에 저장 (다음 번을 위해 기억)
+                self.last_reserve_count = total_reserve
+                
+                # 가용 장비 = 총 보유 - 예비
+                available = total_assets - total_reserve
+                
+                # 최소 요구량: 투표소 수 * 2 (관내1 + 관외1)
+                min_req = len(self.station_data) * 2
+                
+                if available < min_req:
+                    msg = f"장비가 부족합니다!\n\n투표소 수: {len(self.station_data)}개\n최소 필요 장비: {min_req}대 (관내1+관외1)\n현재 가용 장비: {available}대"
+                    messagebox.showerror("배분 불가", msg)
+                    return
+                    
+                self.run_auto_balance(total_assets, total_reserve)
+                pop.destroy()
+                
+            except ValueError:
+                messagebox.showerror("오류", "유효한 숫자를 입력해주세요.")
+
+        ttk.Button(pop, text="최적 배분 실행", command=_run).pack(fill="x", padx=20, pady=20)
+
+    def run_auto_balance(self, total_assets, total_reserve):
+        self._ensure_data_loaded()
+        
+        # 1. 사용할 수 있는 실제 장비 수
+        target_count = total_assets - total_reserve
+        num_stations = len(self.station_data)
+        
+        # 2. 기초 데이터 집계 (투표소별 총 투표자 수)
+        # 구조: {'투표소명': {'intra_voters': 1000, 'extra_voters': 200, ...}}
+        station_stats = {}
+        
+        for file in self.vote_files:
+            if file not in self.cached_data: continue
+            df, _, _ = self.cached_data[file]
+            
+            for idx, row in df.iterrows():
+                st_name = str(row['사전투표소명']).strip()
+                if st_name not in self.station_data: continue # 리스트에 없는 투표소 건너뜀
+                
+                if st_name not in station_stats:
+                    station_stats[st_name] = {'intra_voters': 0, 'extra_voters': 0}
+                
+                rate = self.station_data[st_name]['rate']
+                factor = 1 + (rate / 100.0)
+                
+                try:
+                    station_stats[st_name]['intra_voters'] += float(row['관내사전투표자수']) * factor
+                    station_stats[st_name]['extra_voters'] += float(row['관외사전투표자수']) * factor
+                except: pass
+        
+        # 3. 배분 알고리즘 시작
+        # (1) 모든 투표소의 관내/관외에 1대씩 강제 할당
+        current_alloc = {}
+        for st in self.station_data:
+            current_alloc[st] = {'intra': 1, 'extra': 1}
+            
+        # 남은 장비 수 계산 (총 가용 - (투표소수 * 2))
+        remaining = target_count - (num_stations * 2)
+        
+        # (2) Greedy Algorithm: 남은 장비를 하나씩 '가장 혼잡한 곳(관내/관외 불문)'에 투입
+        while remaining > 0:
+            max_load = -1
+            target_info = None # (st_name, 'intra' or 'extra')
+            
+            for st in current_alloc:
+                # 관내 혼잡도 계산
+                load_intra = station_stats[st]['intra_voters'] / current_alloc[st]['intra']
+                if load_intra > max_load:
+                    max_load = load_intra
+                    target_info = (st, 'intra')
+                    
+                # 관외 혼잡도 계산
+                load_extra = station_stats[st]['extra_voters'] / current_alloc[st]['extra']
+                if load_extra > max_load:
+                    max_load = load_extra
+                    target_info = (st, 'extra')
+            
+            if target_info:
+                st_name, r_type = target_info
+                current_alloc[st_name][r_type] += 1
+                remaining -= 1
+            else:
+                break
+
+        # 4. 결과 집계 및 UI 반영
+        total_intra_used = 0
+        total_extra_used = 0
+        
+        for item_id in self.tree.get_children():
+            st_name = self.tree.item(item_id)['values'][0]
+            if st_name in self.station_data:
+                new_intra = current_alloc[st_name]['intra']
+                new_extra = current_alloc[st_name]['extra']
+                
+                # 데이터 저장
+                self.station_data[st_name]['intra'] = new_intra
+                self.station_data[st_name]['extra'] = new_extra
+                
+                total_intra_used += new_intra
+                total_extra_used += new_extra
+                
+                # UI 업데이트
+                rate = self.station_data[st_name]['rate']
+                self.tree.item(item_id, values=(st_name, new_intra, new_extra, rate))
+        
+        # 5. 결과 메시지 (전체 합계가 사용자가 입력한 값과 일치함을 명시)
+        final_used = total_intra_used + total_extra_used
+        msg = (f"배분 완료!\n\n"
+               f"■ 총 보유 장비: {total_assets}대\n"
+               f"■ 실제 배치: {final_used}대 (관내 {total_intra_used} / 관외 {total_extra_used})\n"
+               f"■ 예비 장비: {total_reserve}대")
+               
+        self.log(f"[자동 배분] 총 {total_assets}대 중 {final_used}대 배치 완료. (예비 {total_reserve})")
+        messagebox.showinfo("배분 완료", msg)
 
     def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False):
         # 내부적으로 사용하는 그리기 함수
@@ -731,3 +901,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = ElectionAnalyzerApp(root)
     root.mainloop()
+
