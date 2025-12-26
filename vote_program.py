@@ -169,12 +169,21 @@ class ElectionAnalyzerApp:
         self.lbl_rate.config(text=text, foreground=color)
         
         for item_id in self.tree.get_children():
-            current_vals = self.tree.item(item_id)['values']
-            st_name = current_vals[0]
-            self.tree.item(item_id, values=(st_name, current_vals[1], current_vals[2], rate))
-            
+            st_name = self.tree.item(item_id)['values'][0]
             if st_name in self.station_data:
+                # 데이터 업데이트
                 self.station_data[st_name]['rate'] = rate
+                
+                # [수정] 화면 갱신 시 기존 화살표 상태 유지 로직
+                curr_intra = self.station_data[st_name]['intra']
+                curr_extra = self.station_data[st_name]['extra']
+                org_intra = self.station_data[st_name]['org_intra']
+                org_extra = self.station_data[st_name]['org_extra']
+                
+                disp_intra = f"{org_intra} → {curr_intra}" if curr_intra != org_intra else str(curr_intra)
+                disp_extra = f"{org_extra} → {curr_extra}" if curr_extra != org_extra else str(curr_extra)
+
+                self.tree.item(item_id, values=(st_name, disp_intra, disp_extra, rate))
 
     def select_vote_files(self):
         files = filedialog.askopenfilenames(title="투표 데이터 선택", filetypes=[("Excel/CSV Files", "*.xlsx *.xls *.csv")])
@@ -340,33 +349,51 @@ class ElectionAnalyzerApp:
         if not item_id: return
         
         st_name = item_id
-        vals = self.tree.item(item_id)['values']
+        # [수정] 표에 적힌 글자(vals) 대신 실제 데이터(self.station_data)에서 값을 가져옵니다.
+        # 이렇게 해야 "3 → 5" 같은 문자가 있어도 숫자 5를 정확히 가져옵니다.
+        if st_name not in self.station_data: return
         
-        curr_intra = vals[1]
-        curr_extra = vals[2]
-        curr_rate = vals[3]
+        data = self.station_data[st_name]
+        curr_intra = data['intra']
+        curr_extra = data['extra']
+        curr_rate = data['rate']
+        org_intra = data['org_intra']
+        org_extra = data['org_extra']
         
-        if column == '#2': 
+        # 화면 표시용 텍스트 생성 함수 (내부 함수)
+        def get_display_text(val, org_val):
+            return f"{org_val} → {val}" if val != org_val else str(val)
+        
+        if column == '#2': # 관내
             new_intra = simpledialog.askinteger("관내 장비 수정", f"[{st_name}]\n관내 장비 수:", 
                                               initialvalue=curr_intra, minvalue=1, maxvalue=50)
             if new_intra is not None:
-                self.tree.item(item_id, values=(st_name, new_intra, curr_extra, curr_rate))
                 self.station_data[st_name]['intra'] = new_intra
+                # UI 업데이트 (화살표 반영)
+                disp_intra = get_display_text(new_intra, org_intra)
+                disp_extra = get_display_text(curr_extra, org_extra)
+                self.tree.item(item_id, values=(st_name, disp_intra, disp_extra, curr_rate))
                 self.log(f"{st_name} 관내 장비 변경: {new_intra}대")
                 
-        elif column == '#3': 
+        elif column == '#3': # 관외
             new_extra = simpledialog.askinteger("관외 장비 수정", f"[{st_name}]\n관외 장비 수:", 
                                               initialvalue=curr_extra, minvalue=1, maxvalue=50)
             if new_extra is not None:
-                self.tree.item(item_id, values=(st_name, curr_intra, new_extra, curr_rate))
                 self.station_data[st_name]['extra'] = new_extra
+                # UI 업데이트 (화살표 반영)
+                disp_intra = get_display_text(curr_intra, org_intra)
+                disp_extra = get_display_text(new_extra, org_extra)
+                self.tree.item(item_id, values=(st_name, disp_intra, disp_extra, curr_rate))
                 self.log(f"{st_name} 관외 장비 변경: {new_extra}대")
                 
-        elif column == '#4': 
+        elif column == '#4': # 증가율
             new_rate = simpledialog.askinteger("증가율 수정", f"[{st_name}]\n투표자 증가율(%):", 
                                              initialvalue=curr_rate, minvalue=-100, maxvalue=200)
             if new_rate is not None:
-                self.tree.item(item_id, values=(st_name, curr_intra, curr_extra, new_rate))
+                # UI 업데이트 (기존 화살표 유지)
+                disp_intra = get_display_text(curr_intra, org_intra)
+                disp_extra = get_display_text(curr_extra, org_extra)
+                self.tree.item(item_id, values=(st_name, disp_intra, disp_extra, new_rate))
                 self.station_data[st_name]['rate'] = new_rate
                 self.log(f"{st_name} 증가율 변경: {new_rate}%")
 
@@ -576,8 +603,12 @@ class ElectionAnalyzerApp:
             messagebox.showwarning("주의", "먼저 투표 데이터 파일을 로드해주세요.")
             return
             
-        # 현재 화면에 등록된 총 장비 수 합산 (기본값 제공용)
-        curr_total = sum([item['intra'] + item['extra'] for item in self.station_data.values()])
+        # [수정] 현재 화면에 배치된 실제 장비 수 합산
+        curr_allocated = sum([item['intra'] + item['extra'] for item in self.station_data.values()])
+        
+        # [수정] 팝업에 띄울 '총 보유 장비' 초기값 = (현재 배치된 장비) + (창고에 있는 예비 장비)
+        # 이렇게 해야 99(배치) + 1(예비) = 100(총보유)으로 올바르게 표시됩니다.
+        default_total_assets = curr_allocated + self.last_reserve_count
         
         # 팝업창 생성
         pop = tk.Toplevel(self.root)
@@ -606,9 +637,10 @@ class ElectionAnalyzerApp:
             entry.pack(side="right", expand=True, fill="x")
             return entry
             
-        entry_total = create_entry(frame_input, "총 보유 장비:", curr_total)
+        # [수정] 계산된 값(default_total_assets)을 입력창 초기값으로 설정
+        entry_total = create_entry(frame_input, "총 보유 장비:", default_total_assets)
         
-        # [▼ 변경된 부분] 고정값 5 대신 기억해둔 값(self.last_reserve_count)을 사용
+        # 기억해둔 예비 장비 값 사용
         entry_reserve = create_entry(frame_input, "예비 장비:", self.last_reserve_count) 
         
         def _run():
@@ -616,7 +648,7 @@ class ElectionAnalyzerApp:
                 total_assets = int(entry_total.get())
                 total_reserve = int(entry_reserve.get())
                 
-                # [▼ 추가된 부분] 입력한 예비 장비 수를 변수에 저장 (다음 번을 위해 기억)
+                # 입력한 예비 장비 수를 변수에 저장 (다음 번을 위해 기억)
                 self.last_reserve_count = total_reserve
                 
                 # 가용 장비 = 총 보유 - 예비
@@ -719,11 +751,18 @@ class ElectionAnalyzerApp:
                 total_intra_used += new_intra
                 total_extra_used += new_extra
                 
-                # UI 업데이트
+                # [수정] UI 업데이트 시 변경된 값은 화살표로 표시
+                org_intra = self.station_data[st_name]['org_intra']
+                org_extra = self.station_data[st_name]['org_extra']
                 rate = self.station_data[st_name]['rate']
-                self.tree.item(item_id, values=(st_name, new_intra, new_extra, rate))
+                
+                # 표시 텍스트 결정 (다르면 "원래값 → 새값", 같으면 "값")
+                disp_intra = f"{org_intra} → {new_intra}" if new_intra != org_intra else str(new_intra)
+                disp_extra = f"{org_extra} → {new_extra}" if new_extra != org_extra else str(new_extra)
+                
+                self.tree.item(item_id, values=(st_name, disp_intra, disp_extra, rate))
         
-        # 5. 결과 메시지 (전체 합계가 사용자가 입력한 값과 일치함을 명시)
+        # 5. 결과 메시지
         final_used = total_intra_used + total_extra_used
         msg = (f"배분 완료!\n\n"
                f"■ 총 보유 장비: {total_assets}대\n"
