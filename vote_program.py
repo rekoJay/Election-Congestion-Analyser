@@ -88,7 +88,7 @@ class ElectionAnalyzerApp:
         frame_balance.pack(fill="x", pady=(0, 5))
 
         ttk.Label(frame_balance, text="📋 투표소별 설정 (수정: 더블클릭)", font=("맑은 고딕", 9, "bold")).pack(side="left")
-        btn_balance = ttk.Button(frame_balance, text="⚖️ 장비 자동 배분 (Auto-Balancing)", command=self.open_balance_popup)
+        btn_balance = ttk.Button(frame_balance, text="⚖️ 장비 자동 배분", command=self.open_balance_popup)
         btn_balance.pack(side="right")
 
         tree_frame = ttk.Frame(frame_sim)
@@ -715,14 +715,19 @@ class ElectionAnalyzerApp:
             target_info = None # (st_name, 'intra' or 'extra')
             
             for st in current_alloc:
+                # [수정] 관외 업무 가중치 (1.156 = 관외가 관내보다 처리 시간이 1.156배 걸린다고 가정)
+                # 이 값을 높일수록 관외에 장비가 더 많이 배정됩니다.
+                weight_extra = 1.156
+
                 # 관내 혼잡도 계산
                 load_intra = station_stats[st]['intra_voters'] / current_alloc[st]['intra']
                 if load_intra > max_load:
                     max_load = load_intra
                     target_info = (st, 'intra')
                     
-                # 관외 혼잡도 계산
-                load_extra = station_stats[st]['extra_voters'] / current_alloc[st]['extra']
+                # 관외 혼잡도 계산 (가중치 적용)
+                # 관외 투표자 수에 가중치를 곱해 부하를 높게 산출 -> 장비 우선 할당 유도
+                load_extra = (station_stats[st]['extra_voters'] * weight_extra) / current_alloc[st]['extra']
                 if load_extra > max_load:
                     max_load = load_extra
                     target_info = (st, 'extra')
