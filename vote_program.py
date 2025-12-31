@@ -17,7 +17,7 @@ from matplotlib.colors import ListedColormap
 class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("사전투표 운용장비 산출 프로그램")
+        self.root.title("사전투표장비 배분 최적화 시스템")
         self.root.geometry("680x920") 
         self.root.resizable(False, True) 
         
@@ -38,13 +38,20 @@ class ElectionAnalyzerApp:
         scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=main_canvas.yview)
         scrollable_frame = ttk.Frame(main_canvas)
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-        )
-
-        main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        # [수정] 캔버스에 프레임을 그릴 때 ID를 변수(frame_id)에 저장합니다.
+        frame_id = main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         main_canvas.configure(yscrollcommand=scrollbar.set)
+
+        # [핵심 수정] 창 크기가 변할 때(Configure), 내용물(frame_id)의 너비를 창 너비(e.width)에 강제로 맞춥니다.
+        def _on_canvas_configure(e):
+            main_canvas.itemconfig(frame_id, width=e.width)
+        
+        # [기존 기능 유지] 내용물이 변할 때 스크롤 범위 갱신
+        def _on_frame_configure(e):
+            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+
+        main_canvas.bind("<Configure>", _on_canvas_configure)
+        scrollable_frame.bind("<Configure>", _on_frame_configure)
 
         main_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -530,6 +537,8 @@ class ElectionAnalyzerApp:
 
             final_df['관내_혼잡도'] = final_df['시간대별_관내투표자수'] / final_df['관내장비수']
             final_df['관외_혼잡도'] = final_df['시간대별_관외투표자수'] / final_df['관외장비수']
+
+            final_df = final_df.loc[:, ~final_df.columns.str.contains('^Unnamed')]
             
             timestamp = datetime.now().strftime('%Y%m%d_%H%M')
             # [수정] exe로 실행될 때와 파이썬 스크립트로 실행될 때의 경로 차이 해결
