@@ -1283,7 +1283,24 @@ class ElectionAnalyzerApp:
             ax_equip.text(0.5, 0.95, "장비수", ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
             ax_equip.text(0.95, 0.5, "시간대별 평균 →", ha='right', va='center', fontsize=9, fontweight='bold', color='#3B5BDB')
 
-            sns.heatmap(pivot, annot=True, fmt='.1f', cmap='Greens', cbar=False, 
+            # [추가] 1. 주석(Annotation)용 데이터프레임 생성 (문자열 포맷)
+            annot_df = pivot.applymap(lambda x: f"{x:.1f}")
+
+            # [추가] 2. 11시~18시 컬럼 필터링 및 평균 계산
+            # pivot의 컬럼 중 정수형이면서 11 이상 18 이하인 것만 추출
+            target_hours = [c for c in pivot.columns if isinstance(c, (int, float)) and 11 <= c <= 18]
+            
+            if target_hours:
+                # avg_label('') 행은 '시간대별 전체 평균'을 담고 있음. 여기서 11~18시 데이터만 뽑아서 다시 평균 계산
+                mean_11_18 = pivot.loc[avg_label, target_hours].mean()
+                
+                # [추가] 3. 좌측 상단(전체 평균) 셀 텍스트 수정
+                # 기존 값(전체 평균) 아래에 괄호로 11~18시 평균 추가
+                original_text = annot_df.iloc[0, 0]
+                annot_df.iloc[0, 0] = f"{original_text}\n({mean_11_18:.1f})"
+
+            # [수정] annot에 True 대신 직접 만든 문자열 DF(annot_df) 전달, fmt는 비움('')
+            sns.heatmap(pivot, annot=annot_df, fmt='', cmap='Greens', cbar=False, 
                         linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
             
             ax.text(0.5, -0.2, "↓ 투표소별\n평균", ha='center', va='bottom', fontsize=10, fontweight='bold', color='#3B5BDB', clip_on=False)
@@ -1354,10 +1371,11 @@ class ElectionAnalyzerApp:
             main_title = "사전투표소 (예상) 혼잡도"
 
         fig.suptitle(main_title, fontsize=20, fontweight='bold')
+        # [수정] 하단 설명 문구 개선 (가독성 높임)
         fig.text(0.5, 0.02, 
-                    "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.\n"
-                    "장비 열 표기: [기존] → [변경] / 파란색 테두리: 평균값", 
-                    ha='center', fontsize=11, color='gray')
+                    "※ 각 셀의 수치: 장비 1대당 1시간 동안의 투표자 수 (혼잡도)\n"
+                    "파란색 테두리: 전체 시간 평균  |  ( 괄호 안 숫자 ): 11~18시 집중평균  |  장비: [기존] → [변경]", 
+                    ha='center', fontsize=11, fontweight='bold', color='#333333')
         
         plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
         
