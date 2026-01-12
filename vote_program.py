@@ -36,14 +36,14 @@ class ElectionAnalyzerApp:
     # [수정] 통합 조정률 텍스트 생성 헬퍼
     def _get_merged_rate_text(self, r_intra, r_extra):
         def _fmt(val):
-            if val > 0: return f"🔺{val}%"
-            elif val < 0: return f"🔻{abs(val)}%"
+            # [변경] 화살표 제거하고 +, - 기호로 통일 (가독성 향상)
+            if val > 0: return f"+ {val}%"        
+            elif val < 0: return f"- {abs(val)}%" 
             else: return "-"
             
         if r_intra == r_extra:
             return _fmt(r_intra)
         else:
-            # [변경] "내/외" -> "관내/관외"로 전체 표기
             return f"관내:{_fmt(r_intra)} / 관외:{_fmt(r_extra)}"
             
     def create_widgets(self):
@@ -142,7 +142,7 @@ class ElectionAnalyzerApp:
         self.tree.heading("rate_merged", text="조정률(관내/외)") 
         
         self.tree.column("station", width=150)
-        self.tree.column("elect_diff", width=70, anchor="center")
+        self.tree.column("elect_diff", width=90, anchor="center")
         self.tree.column("intra", width=60, anchor="center")
         self.tree.column("extra", width=60, anchor="center")
         # [변경] 글자가 길어지므로 너비를 120 -> 150으로 확대
@@ -150,7 +150,7 @@ class ElectionAnalyzerApp:
         
         scrollbar_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar_tree.set)
-        
+
         self.tree.pack(side="left", fill="both", expand=True)
         scrollbar_tree.pack(side="right", fill="y")
         
@@ -398,6 +398,7 @@ class ElectionAnalyzerApp:
         
         # [수정] 선거인수 변동률 계산 로직 (두 파일 병합)
         electorate_rates = {}
+        electorate_diffs = {}
         
         if self.file_past_elect and self.file_recent_elect:
             try:
@@ -454,14 +455,20 @@ class ElectionAnalyzerApp:
                 past_map = load_elect_data(self.file_past_elect)
                 recent_map = load_elect_data(self.file_recent_elect)
                 
-                # 두 맵을 비교하여 증감률 계산
+                # 두 맵을 비교하여 증감률 및 차이 계산
                 count_matched = 0
                 for dong_name, recent_val in recent_map.items():
                     if dong_name in past_map:
                         past_val = past_map[dong_name]
                         if past_val > 0:
+                            # 1. 시뮬레이션용 비율 계산 (유지)
                             rate_val = ((recent_val - past_val) / past_val) * 100
                             electorate_rates[dong_name] = int(round(rate_val))
+                            
+                            # 2. [추가] 화면 표시용 인원 차이 계산
+                            diff_val = int(recent_val - past_val)
+                            electorate_diffs[dong_name] = diff_val
+                            
                             count_matched += 1
                 
                 self.log(f"변동률 계산 완료: {count_matched}개 동 매칭됨")
@@ -503,7 +510,16 @@ class ElectionAnalyzerApp:
                 for dong_name, e_rate in electorate_rates.items():
                     if dong_name in st_clean:
                         elect_rate = e_rate
-                        elect_display = f"{e_rate}%"
+                        
+                        diff = electorate_diffs.get(dong_name, 0)
+                        
+                        # [변경] 화살표 대신 직관적인 +, - 기호 사용
+                        if diff > 0:
+                            elect_display = f"+ {diff:,}명" 
+                        elif diff < 0:
+                            elect_display = f"- {abs(diff):,}명"
+                        else:
+                            elect_display = "-" # 변동 없음
                         break
             
             # [수정] 데이터 저장: rate를 intra/extra로 분리
@@ -515,10 +531,10 @@ class ElectionAnalyzerApp:
                 'org_intra': intra, 'org_extra': extra
             }
             
-            # [수정] 통합 텍스트 적용
+            # [수정] tags 옵션 삭제 (원래대로 복구)
             rate_txt = self._get_merged_rate_text(current_global_rate, current_global_rate)
 
-            # Treeview 컬럼: station, elect_diff, intra, extra, rate_merged
+            # 맨 뒤에 있었던 tags=(row_tag,) 부분을 지우세요.
             self.tree.insert("", "end", iid=st, values=(st, elect_display, intra, extra, rate_txt))
             
         self.log(f"목록 갱신 완료: 총 {len(sorted_stations)}개 투표소")
@@ -986,47 +1002,68 @@ class ElectionAnalyzerApp:
         
         # 3. 배분 알고리즘 시작
         # (1) 기본 할당: 모든 투표소의 관내/관외에 1대씩 강제 할당
-        current_alloc = {}
+        current_alloc = {} # 장비 배분 현황을 저장할 빈 딕셔너리를 생성합니다.
         for st in self.station_data:
+            # 모든 투표소(st)를 순회하며 초기값을 관내 1대, 관외 1대로 설정합니다.
             current_alloc[st] = {'intra': 1, 'extra': 1}
-            
+
+        # 남은 장비(remaining) 계산:
+        # 전체 가용 장비(target_count)에서 방금 나눠준 기본 장비(투표소 수 * 2대)를 뺍니다.
+        # 이제 이 'remaining' 개수만큼 추가 배분을 진행할 수 있습니다.    
         remaining = target_count - (num_stations * 2)
         
         # (2) Greedy Algorithm
-        while remaining > 0:
-            max_load = -1
-            target_info = None 
+        while remaining > 0: # 남은 장비가 0이 될 때까지 이 반복문을 계속 돌립니다.
+            # 이번 턴(장비 1대)을 받을 '가장 바쁜 곳'을 찾기 위한 비교 변수 초기화
+            max_load = -1 # 현재까지 발견된 '최대 부하(혼잡도)' 값
+            target_info = None # 장비를 받을 대상 정보 (투표소명, 장비타입)
             
+            # 모든 투표소를 하나씩 확인하며 어디가 제일 급한지 비교합니다.
             for st in current_alloc:
                 # 관외 업무 가중치 (1.156)
                 weight_extra = 1.156
 
-                # [수정] 0으로 나누기 방지 로직 적용
+                # 현재 이 투표소에 배정된 관내 장비 수 확인
                 curr_intra = current_alloc[st]['intra']
+
                 if curr_intra > 0:
+                    # 관내 부하 = (예측된 관내 투표자 수) / (현재 관내 장비 수)
+                    # 예: 투표자 1000명 / 장비 2대 = 부하 500
                     load_intra = station_stats[st]['intra_voters'] / curr_intra
                 else:
                     load_intra = float('inf') # 0대면 무조건 최우선 배정
 
+                # 만약 이 투표소의 관내 부하가 지금까지 찾은 최대 부하보다 크다면?
                 if load_intra > max_load:
-                    max_load = load_intra
-                    target_info = (st, 'intra')
+                    max_load = load_intra # 최대 부하 값을 갱신하고
+                    target_info = (st, 'intra') # "현재 1등은 이 투표소의 '관내' 쪽입니다"라고 기록
                 
+                # 현재 이 투표소에 배정된 관외 장비 수 확인
                 curr_extra = current_alloc[st]['extra']
                 if curr_extra > 0:
+                    # 관외 부하 = (예측된 관외 투표자 수 * 1.156) / (현재 관외 장비 수)
+                    # *중요: 관외 투표자 수에 가중치를 곱해 부하를 더 높게(더 힘들게) 평가함
                     load_extra = (station_stats[st]['extra_voters'] * weight_extra) / curr_extra
                 else:
                     load_extra = float('inf') # 0대면 무조건 최우선 배정
 
+                # 만약 이 투표소의 관외 부하가 지금까지 찾은 최대 부하(관내 포함)보다 더 크다면?
                 if load_extra > max_load:
-                    max_load = load_extra
-                    target_info = (st, 'extra')
+                    max_load = load_extra # 최대 부하 값을 갱신하고
+                    target_info = (st, 'extra') # "현재 1등은 이 투표소의 '관외' 쪽입니다"라고 기록 (덮어쓰기)
             
+            # for문이 끝나고 최종적으로 선정된 곳(target_info)이 있다면
             if target_info:
-                st_name, r_type = target_info
+                st_name, r_type = target_info # 이름과 타입(intra/extra)을 꺼냅니다.
+                
+                # 해당 투표소의 해당 타입 장비를 1대 늘려줍니다. (즉시 반영)
+                # *중요: 여기서 +1 된 값은 다음 while 루프가 돌 때 'curr_intra/extra'가 되어
+                # 분모를 키우므로 부하를 낮추는 역할을 합니다.
                 current_alloc[st_name][r_type] += 1
+                # 사용할 수 있는 남은 장비 수를 1개 줄입니다.
                 remaining -= 1
             else:
+                # 만약 더 이상 줄 곳이 없거나 오류가 있다면 반복을 종료합니다.
                 break
 
         # 4. 결과 집계 및 UI 반영 (여기가 에러 났던 부분)
@@ -1262,27 +1299,45 @@ class ElectionAnalyzerApp:
             ax.xaxis.set_label_position('top')
             ax.tick_params(axis='x', length=0)
 
-            ticks = [0.5] + list(range(1, len(pivot.columns) + 1))
-            ax.set_xticks(ticks)
-            
+            # [엄격 모드] 데이터 무결성 검사 (순서대로 붙여넣으세요)
             if time_cols:
-                # 시간대 라벨 처리
                 try:
-                    start_time = int(time_cols[0]) - 1
-                    end_time = int(time_cols[-1])
-                    labels = [''] + list(range(start_time, end_time + 1))
-                except:
-                    # 혹시라도 시간대가 숫자가 아닐 경우 대비
+                    # 1. 시간대 숫자 변환 및 범위 계산
+                    times = [int(c) for c in time_cols]
+                    start_t, end_t = min(times), max(times)
+                    expected_count = end_t - start_t + 1 # 예: 6시~9시면 4개여야 함
+                    
+                    # 2. [검증] 실제 데이터 칸 수 vs 계산된 칸 수 비교
+                    if len(times) != expected_count:
+                        # 여기서 에러를 발생시켜 프로그램이 경고창을 띄우게 함
+                        raise ValueError(
+                            f"데이터 오류 발견! [{day}일차]\n"
+                            f"시간대가 연속되지 않거나 중복 파일이 있습니다.\n"
+                            f"- 범위: {start_t}시 ~ {end_t}시 (필요: {expected_count}칸)\n"
+                            f"- 실제: {len(times)}칸 (중복/누락 확인 필요)"
+                        )
+                        
+                    # 3. 검증 통과 시, 엄격한 기준으로 라벨 생성
+                    labels = [''] + list(range(start_t, end_t + 1))
+                    
+                except ValueError as ve:
+                    raise ve # 위에서 만든 에러 메시지를 그대로 상위로 전달
+                except Exception:
+                    # 숫자가 아닌 컬럼이 섞여있을 경우 (예외 처리)
                     labels = [''] + time_cols
-                ax.set_xticklabels(labels, rotation=0)
-
-            # [수정] 제목 처리 로직 - 괄호 제거 및 어순 변경
-            if str(day) == '전체':
-                # 출력 예: 관내 사전투표 전체(평균) 예상 혼잡도
-                title_txt = f'{type_name} 사전투표 전체(평균) 예상 혼잡도'
             else:
-                # 출력 예: 관내 사전투표 1일차 예상 혼잡도
-                title_txt = f'{type_name} 사전투표 {day}일차 예상 혼잡도'
+                labels = ['']
+
+            # 4. 틱(눈금) 위치 설정 (데이터 개수에 정확히 맞춤)
+            # 0.5, 1.5, 2.5... 위치에 라벨을 찍어 정확도 향상
+            ticks = np.arange(len(pivot.columns)) + 0.5
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(labels, rotation=0)
+
+            # [재수정] 제목 포맷 변경: {관내/관외} 사전투표 ({기간})
+            # 예: 관내 사전투표 (전체(평균)) 또는 관외 사전투표 (1일차)
+            day_str = "전체(평균)" if str(day) == '전체' else f"{day}일차"
+            title_txt = f"{type_name} 사전투표 ({day_str})"
             
             ax.set_title(title_txt, fontsize=14, fontweight='bold', pad=20)
             ax.set_xlabel('시간대', fontsize=11, fontweight='bold')
@@ -1291,7 +1346,14 @@ class ElectionAnalyzerApp:
         for i in range(count, len(axes_flat)):
             axes_flat[i].axis('off')
 
-        fig.suptitle(f"사전투표 운용장비 산출 시뮬레이션 결과", fontsize=20, fontweight='bold')
+        # [재수정] 메인 타이틀 포맷 변경: {지역명} 사전투표소 (예상) 혼잡도
+        # self.region_name에 값이 있으면 넣고, 없으면 기본 텍스트 출력
+        if self.region_name:
+            main_title = f"{self.region_name} 사전투표소 (예상) 혼잡도"
+        else:
+            main_title = "사전투표소 (예상) 혼잡도"
+
+        fig.suptitle(main_title, fontsize=20, fontweight='bold')
         fig.text(0.5, 0.02, 
                     "각 셀의 수치는 1시간 동안 사전투표 장비 1대당 투표용지 발급자 수를 나타냄.\n"
                     "장비 열 표기: [기존] → [변경] / 파란색 테두리: 평균값", 
