@@ -1,4 +1,4 @@
-import sys
+\import sys
 import pandas as pd
 import re
 import os
@@ -103,7 +103,6 @@ class ElectionAnalyzerApp:
         btn_recent = ttk.Button(frame_elect, text="📂 ② 최근 선거인수", command=self.select_recent_file)
         btn_recent.pack(side="right", fill="x", expand=True, padx=(2, 0))
         
-        # [수정] 아래 코드가 중복되어 두 번 적혀있다면 하나를 지워주세요! (한 번만 나와야 함)
         self.lbl_elect_status = ttk.Label(frame_data, text="파일 미선택 (변동률 미적용)", foreground="gray", font=("맑은 고딕", 8))
         self.lbl_elect_status.pack(pady=(2, 0))
         
@@ -871,8 +870,6 @@ class ElectionAnalyzerApp:
         plt.rc('font', family=font_family)
         plt.rc('axes', unicode_minus=False)
 
-        # 2. 이름 정리
-        df['short_name'] = df['사전투표소명'].astype(str).str.replace('사전투표소', '').str.strip()
         df['label_clean'] = df['short_name'] 
         
 
@@ -933,10 +930,11 @@ class ElectionAnalyzerApp:
                 new_cols = ['전체평균'] + time_cols
                 pivot = pivot[new_cols]
 
-                # 행 순서 정리: [시간대평균]을 맨 앞으로
-                station_rows = [idx for idx in pivot.index if idx != '시간대평균']
-                # 원본 순서 유지 노력 (투표소명이 인덱스이므로 정렬보다는 기존 순서 따름)
-                # 여기서는 편의상 그대로 둡니다.
+                original_order = list(dict.fromkeys(df_day['short_name']))
+                
+                # pivot 테이블에 실제로 존재하는 투표소만 필터링 (안전장치)
+                station_rows = [name for name in original_order if name in pivot.index]
+                
                 new_rows = ['시간대평균'] + station_rows
                 pivot = pivot.reindex(new_rows)
 
@@ -970,10 +968,6 @@ class ElectionAnalyzerApp:
                         except:
                             final_sheet_df.loc[idx, '장비수'] = "-"
                         
-                        # 수치 포맷팅 (소수점 1자리) - 단, 문자열로 변환하지 않고 엑셀 스타일로 처리하기 위해 숫자 유지
-                        # 단, 전체평균 컬럼은 위에서 문자열로 바꿨으므로 제외
-                        pass
-
                 # 엑셀 시트에 쓰기
                 final_sheet_df.to_excel(writer, sheet_name=sheet_name)
                 
@@ -1041,9 +1035,6 @@ class ElectionAnalyzerApp:
                     cell.border = Border(left=Side(style='medium', color='0000FF'), 
                                          right=Side(style='medium', color='0000FF'),
                                          top=prev_border.top, bottom=prev_border.bottom)
-                    if row > 2: # 헤더와 평균행 제외하고 데이터 부분은 소수점 포맷
-                         # 괄호가 섞인 텍스트일 수 있으므로 try-except 없이 텍스트 그대로 둠
-                         pass
 
                 # 교차지점 (2행 3열: 전체 평균의 평균) - 완전 파란 테두리
                 ws.cell(row=2, column=3).border = border_thick_blue
@@ -1102,7 +1093,7 @@ class ElectionAnalyzerApp:
             messagebox.showwarning("주의", "먼저 투표 데이터 파일을 로드해주세요.")
             return
             
-        # [수정] 기본값 설정 로직 변경
+        # [수정] 기본값 설정 로직
         # 1순위: 장비 파일의 D7(총보유), H7(예비) 값 사용
         # 2순위: 파일 없으면 기존 로직(화면 합계 + 5) 사용
         
@@ -1111,33 +1102,27 @@ class ElectionAnalyzerApp:
         if file_total is not None and file_total > 0:
             default_total_assets = file_total
             default_reserve = file_reserve if file_reserve is not None else 5
-            self.last_reserve_count = default_reserve # 읽어온 예비값 기억
-            
-            source_msg = "※ 장비 파일(D7, H7)에서 정보를 불러왔습니다."
+            self.last_reserve_count = default_reserve 
         else:
-            # [기존 로직 유지] 파일이 없거나 읽기 실패 시
+            # 파일이 없거나 읽기 실패 시
             curr_allocated = sum([item['intra'] + item['extra'] for item in self.station_data.values()])
             default_total_assets = curr_allocated + self.last_reserve_count
             default_reserve = self.last_reserve_count
-            
-            source_msg = "※ 장비 파일 정보 없음 (기존 설정값 사용)"
         
         # 팝업창 생성
         pop = tk.Toplevel(self.root)
         pop.title("장비 자동 배분 (통합 모드)")
-        pop.geometry("350x300") # 높이 약간 증가
+        pop.geometry("350x260") # [변경] 메시지 삭제로 높이를 300 -> 260으로 줄임
         pop.resizable(False, False)
         
         # 화면 중앙 배치
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 175
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 150
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 130
         pop.geometry(f"+{x}+{y}")
         
+        # [변경] 안내 문구만 남기고 출처 메시지 삭제
         ttk.Label(pop, text="보유한 [전체 장비 수]를 입력하세요.\n관내/관외 구분 없이 혼잡도에 따라 통합 배분합니다.", 
-                  justify="center", foreground="gray").pack(pady=(15, 5))
-        
-        # 출처 표시 (파일에서 왔는지 확인용)
-        ttk.Label(pop, text=source_msg, justify="center", foreground="blue", font=("맑은 고딕", 8)).pack(pady=(0, 10))
+                  justify="center", foreground="gray").pack(pady=(15, 10))
         
         frame_input = ttk.Frame(pop, padding="20")
         frame_input.pack(fill="both", expand=True)
@@ -1190,7 +1175,14 @@ class ElectionAnalyzerApp:
         
         for file in self.vote_files:
             if file not in self.cached_data: continue
-            df, _, _ = self.cached_data[file]
+            
+            # [수정] 시간대 정보를 확인하기 위해 변수(time)를 받습니다.
+            df, day, time = self.cached_data[file]
+            
+            # [추가] 11시 ~ 18시 사이의 데이터가 아니면 건너뜁니다.
+            # (데이터 파일이 시간대별로 쪼개져 있으므로, 파일 자체를 스킵하면 됩니다.)
+            if time is None or not (11 <= time <= 18):
+                continue
             
             for idx, row in df.iterrows():
                 st_name = str(row['사전투표소명']).strip()
@@ -1338,15 +1330,21 @@ class ElectionAnalyzerApp:
         # 팝업창 생성
         pop = tk.Toplevel(self.root)
         pop.title("조정률 개별 설정")
-        pop.geometry("260x180")
+        
+        # [수정] 안내 문구가 들어갈 공간 확보를 위해 높이를 180 -> 220으로 변경
+        pop.geometry("260x220")
         pop.resizable(False, False)
         
         # 중앙 배치
         x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 130
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 90
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 110 # 높이 변경 반영
         pop.geometry(f"+{x}+{y}")
 
-        ttk.Label(pop, text=f"[{st_name}]", font=("맑은 고딕", 10, "bold")).pack(pady=(15, 10))
+        ttk.Label(pop, text=f"[{st_name}]", font=("맑은 고딕", 10, "bold")).pack(pady=(15, 5))
+
+        # [추가] 안내 문구 라벨
+        guide_msg = "※ 이 설정은 투표율이 아닌\n사전투표자 수의 증감률(%)입니다."
+        ttk.Label(pop, text=guide_msg, justify="center", foreground="blue", font=("맑은 고딕", 8)).pack(pady=(0, 10))
 
         frame_in = ttk.Frame(pop)
         frame_in.pack(fill="x", padx=30, pady=5)
