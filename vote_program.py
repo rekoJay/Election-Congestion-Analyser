@@ -13,6 +13,9 @@ import platform
 import numpy as np 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.colors import ListedColormap 
+from openpyxl.styles import PatternFill, Border, Side, Alignment, Font
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.utils import get_column_letter
 
 class ElectionAnalyzerApp:
     def __init__(self, root):
@@ -94,13 +97,20 @@ class ElectionAnalyzerApp:
         # 과거 파일
         btn_past = ttk.Button(frame_elect, text="📂 ① 과거 선거인수", command=self.select_past_file)
         btn_past.pack(side="left", fill="x", expand=True, padx=(0, 2))
+    
         
-        # 최근 파일
+        # 최근 파일 버튼 (바로 위 코드)
         btn_recent = ttk.Button(frame_elect, text="📂 ② 최근 선거인수", command=self.select_recent_file)
         btn_recent.pack(side="right", fill="x", expand=True, padx=(2, 0))
         
+        # [수정] 아래 코드가 중복되어 두 번 적혀있다면 하나를 지워주세요! (한 번만 나와야 함)
         self.lbl_elect_status = ttk.Label(frame_data, text="파일 미선택 (변동률 미적용)", foreground="gray", font=("맑은 고딕", 8))
         self.lbl_elect_status.pack(pady=(2, 0))
+        
+        # [추가했던 초기화 버튼]
+        ttk.Separator(frame_data, orient="horizontal").pack(fill="x", pady=(10, 5))
+        btn_reset = ttk.Button(frame_data, text="🔄 모든 데이터 초기화", command=self.reset_all)
+        btn_reset.pack(fill="x", ipady=3)
         
         # 2. 시뮬레이션 설정
         frame_sim = ttk.LabelFrame(content_frame, text=" 2. 시뮬레이션 설정 (데이터 튜닝) ", padding="10")
@@ -193,6 +203,37 @@ class ElectionAnalyzerApp:
         
         self.log_text = tk.Text(log_frame, height=6, state='disabled', bg="#F0F0F0", font=("맑은 고딕", 9))
         self.log_text.pack(fill="both", expand=True)
+
+    def reset_all(self):
+        # 1. 사용자 확인
+        if not messagebox.askyesno("초기화 확인", "업로드한 파일과 목록을 모두 초기화하시겠습니까?\n(작업 중인 내용은 사라집니다.)"):
+            return
+
+        # 2. 내부 데이터 변수 초기화
+        self.vote_files = []
+        self.cached_data = {} 
+        self.equipment_file = None
+        self.file_past_elect = None   
+        self.file_recent_elect = None 
+        self.station_data = {}
+        self.region_name = ""
+        
+        # 3. UI 텍스트 초기화
+        self.lbl_file_count.config(text="파일 없음", foreground="gray")
+        self.lbl_equip_status.config(text="파일 미선택 (기본값: 1대 적용)", foreground="gray")
+        self.lbl_elect_status.config(text="파일 미선택 (변동률 미적용)", foreground="gray")
+        
+        # 4. 트리뷰(리스트) 비우기
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+            
+        # 5. 슬라이더 초기화
+        self.var_rate.set(0.0)
+        self.on_slider_change(0.0)
+
+        # 6. 로그 남기기
+        self.log("=== 모든 데이터가 초기화되었습니다 ===")
+        messagebox.showinfo("완료", "초기화되었습니다.")    
 
     def select_past_file(self):
         file = filedialog.askopenfilename(title="과거 선거인수 파일 (A열:동명, B열:인수)", filetypes=[("Excel Files", "*.xlsx *.xls")])
@@ -463,7 +504,7 @@ class ElectionAnalyzerApp:
                         if past_val > 0:
                             # 1. 시뮬레이션용 비율 계산 (유지)
                             rate_val = ((recent_val - past_val) / past_val) * 100
-                            electorate_rates[dong_name] = int(round(rate_val))
+                            electorate_rates[dong_name] = rate_val
                             
                             # 2. [추가] 화면 표시용 인원 차이 계산
                             diff_val = int(recent_val - past_val)
@@ -515,9 +556,9 @@ class ElectionAnalyzerApp:
                         
                         # [변경] 화살표 대신 직관적인 +, - 기호 사용
                         if diff > 0:
-                            elect_display = f"+ {diff:,}명" 
+                            elect_display = f"+ {diff:,}" 
                         elif diff < 0:
-                            elect_display = f"- {abs(diff):,}명"
+                            elect_display = f"- {abs(diff):,}"
                         else:
                             elect_display = "-" # 변동 없음
                         break
@@ -668,11 +709,11 @@ class ElectionAnalyzerApp:
 
     def _execute_simulation(self):
         try:
-            # [수정] 백엔드 설정 및 경고 무시
+            # [기존 설정 유지]
             import matplotlib
             matplotlib.use('Agg')
             import warnings
-            warnings.simplefilter(action='ignore', category=FutureWarning) # 경고 메시지 숨기기
+            warnings.simplefilter(action='ignore', category=FutureWarning)
 
             label = "통합 분석"
             self.log(f"시뮬레이션 시작: {label}")
@@ -681,6 +722,7 @@ class ElectionAnalyzerApp:
             
             all_data = []
             
+            # [기존 데이터 로드 및 계산 로직 유지]
             for file in self.vote_files:
                 if file not in self.cached_data: continue
                 
@@ -737,7 +779,6 @@ class ElectionAnalyzerApp:
 
             final_df = final_df.sort_values(by=['사전투표소명', '일차', '시간대'])
             
-            # [수정] 경고 해결을 위해 observed=True 추가 (없어도 동작은 함)
             final_df['시간대별_관내투표자수'] = final_df.groupby(['사전투표소명', '일차'], observed=True)['관내사전투표자수'].diff()
             final_df['시간대별_관외투표자수'] = final_df.groupby(['사전투표소명', '일차'], observed=True)['관외사전투표자수'].diff()
             
@@ -760,17 +801,40 @@ class ElectionAnalyzerApp:
 
             final_df = final_df.loc[:, ~final_df.columns.str.contains('^Unnamed')]
             
+            # [짧은 이름 생성] 시각화 및 엑셀 저장 시 사용
+            final_df['short_name'] = final_df['사전투표소명'].astype(str).str.replace('사전투표소', '').str.strip()
+
             timestamp = datetime.now().strftime('%Y%m%d_%H%M')
             if getattr(sys, 'frozen', False):
                 script_dir = os.path.dirname(os.path.abspath(sys.executable))
             else:
                 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+            # 1. Raw 데이터 엑셀 저장 (기존 데이터)
             excel_name = f"시뮬레이션_결과_{timestamp}.xlsx"
             full_excel_path = os.path.join(script_dir, excel_name)
-
             final_df.to_excel(full_excel_path, index=False)
-            self.log(f"엑셀 저장 완료: {full_excel_path}")
+            self.log(f"Raw 데이터 저장 완료: {full_excel_path}")
+
+            # =========================================================================
+            # [핵심 수정] 2. '전체(평균)' 데이터 생성 로직을 여기로 이동!
+            # =========================================================================
+            try:
+                numeric_cols = ['관내_혼잡도', '관외_혼잡도', '관내장비수', '원본_관내장비수', '관외장비수', '원본_관외장비수']
+                # short_name 기준으로 그룹화
+                df_mean = final_df.groupby(['사전투표소명', '시간대', 'short_name'], observed=True)[numeric_cols].mean().reset_index()
+                df_mean['일차'] = '전체'
+                # 원본 final_df에 합치기
+                final_df = pd.concat([final_df, df_mean], ignore_index=True)
+                self.log("전체(평균) 데이터 계산 완료")
+            except Exception as e:
+                self.log(f"평균 데이터 생성 실패: {e}")
+
+            # 3. 시각화 형태(히트맵) 엑셀 리포트 저장 (이제 '전체' 데이터가 포함됨)
+            report_name = f"시각화_리포트_{timestamp}.xlsx"
+            full_report_path = os.path.join(script_dir, report_name)
+            self.save_visual_excel(final_df, full_report_path)
+            self.log(f"시각화 리포트 저장 완료: {full_report_path}")
             
             self.log("그래프 생성 중...")
             
@@ -789,11 +853,9 @@ class ElectionAnalyzerApp:
             self.root.after(0, _finish)
 
         except Exception as e:
-            # [핵심 수정] 에러 메시지를 문자열(err_msg)로 미리 저장해둡니다.
-            # 이렇게 해야 나중에 _error 함수가 실행될 때 e가 사라져도 내용을 알 수 있습니다.
             err_msg = str(e)
             import traceback
-            traceback.print_exc() # 콘솔에 에러 상세 내용 출력
+            traceback.print_exc()
 
             def _error():
                 if hasattr(self, 'loading_win'): self.loading_win.destroy()
@@ -813,14 +875,6 @@ class ElectionAnalyzerApp:
         df['short_name'] = df['사전투표소명'].astype(str).str.replace('사전투표소', '').str.strip()
         df['label_clean'] = df['short_name'] 
         
-        # 3. 전체(평균) 데이터 생성
-        numeric_cols = ['관내_혼잡도', '관외_혼잡도', '관내장비수', '원본_관내장비수', '관외장비수', '원본_관외장비수']
-        try:
-            df_mean = df.groupby(['사전투표소명', '시간대', 'short_name', 'label_clean'], observed=True)[numeric_cols].mean().reset_index()
-            df_mean['일차'] = '전체'
-            df = pd.concat([df, df_mean], ignore_index=True)
-        except Exception as e:
-            print(f"평균 데이터 생성 중 오류(무시됨): {e}")
 
         # 4. 시나리오 설정 (체크박스 값 반영)
         all_scenarios = [
@@ -842,6 +896,165 @@ class ElectionAnalyzerApp:
         # save_name을 filename이라는 이름으로 넘겨줍니다.
         return self._plot_page(df, active_scenarios, unique_stations, filename=save_name, is_pdf=False)
 
+    def save_visual_excel(self, df, filename):
+        # 1. 시나리오 정의 (visualize_results와 동일 로직)
+        scenarios = [
+            ('1일차_관내', 1, '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
+            ('1일차_관외', 1, '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
+            ('2일차_관내', 2, '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
+            ('2일차_관외', 2, '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get()),
+            ('전체_관내', '전체', '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day_all.get() and self.var_intra.get()),
+            ('전체_관외', '전체', '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day_all.get() and self.var_extra.get())
+        ]
+
+        # 2. 엑셀 작성 시작
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            for (sheet_name, day, type_name, value_col, eq_col, org_eq_col, active) in scenarios:
+                if not active: continue
+
+                # 데이터 필터링
+                if str(day) == '전체':
+                    df_day = df[df['일차'] == '전체']
+                else:
+                    df_day = df[df['일차'] == day]
+                
+                if df_day.empty: continue
+
+                # 피벗 테이블 생성 (이미지 생성 로직과 동일)
+                pivot = df_day.pivot_table(index=['short_name'], columns='시간대', values=value_col)
+                
+                # 평균 행/열 계산
+                pivot['전체평균'] = pivot.mean(axis=1)
+                avg_row = pivot.mean(axis=0)
+                pivot.loc['시간대평균'] = avg_row
+                
+                # 컬럼 순서 정리: [전체평균]을 맨 앞으로
+                time_cols = sorted([c for c in pivot.columns if c != '전체평균'])
+                new_cols = ['전체평균'] + time_cols
+                pivot = pivot[new_cols]
+
+                # 행 순서 정리: [시간대평균]을 맨 앞으로
+                station_rows = [idx for idx in pivot.index if idx != '시간대평균']
+                # 원본 순서 유지 노력 (투표소명이 인덱스이므로 정렬보다는 기존 순서 따름)
+                # 여기서는 편의상 그대로 둡니다.
+                new_rows = ['시간대평균'] + station_rows
+                pivot = pivot.reindex(new_rows)
+
+                # 장비 정보 가져오기
+                equip_data = df_day.drop_duplicates(subset=['short_name']).set_index('short_name')[[eq_col, org_eq_col]]
+                
+                # 엑셀용 데이터프레임 구성 (장비 컬럼 추가)
+                # 최종 컬럼: [투표소명(Index), 장비수, 전체평균, 7, 8, ... 18]
+                final_sheet_df = pivot.copy()
+                final_sheet_df.insert(0, '장비수', "") # 장비수 컬럼을 맨 앞에 추가
+
+                for idx in final_sheet_df.index:
+                    if idx == '시간대평균':
+                        # 시간대평균 행의 장비수는 11-18시 집중평균 값 등으로 대체하거나 비워둠
+                        # 이미지처럼 11~18시 집중평균 계산하여 전체평균 셀에 병기
+                        target_hours = [c for c in pivot.columns if isinstance(c, (int, float)) and 11 <= c <= 18]
+                        if target_hours:
+                            mean_val = pivot.loc[idx, '전체평균']
+                            focus_mean = pivot.loc[idx, target_hours].mean()
+                            final_sheet_df.loc[idx, '전체평균'] = f"{mean_val:.1f}\n({focus_mean:.1f})"
+                        else:
+                            final_sheet_df.loc[idx, '전체평균'] = f"{pivot.loc[idx, '전체평균']:.1f}"
+                        final_sheet_df.loc[idx, '장비수'] = "평균"
+                    else:
+                        # 장비수 텍스트 생성
+                        try:
+                            curr = int(equip_data.loc[idx, eq_col])
+                            org = int(equip_data.loc[idx, org_eq_col])
+                            txt = f"{org} → {curr}" if curr != org else f"{curr}"
+                            final_sheet_df.loc[idx, '장비수'] = txt
+                        except:
+                            final_sheet_df.loc[idx, '장비수'] = "-"
+                        
+                        # 수치 포맷팅 (소수점 1자리) - 단, 문자열로 변환하지 않고 엑셀 스타일로 처리하기 위해 숫자 유지
+                        # 단, 전체평균 컬럼은 위에서 문자열로 바꿨으므로 제외
+                        pass
+
+                # 엑셀 시트에 쓰기
+                final_sheet_df.to_excel(writer, sheet_name=sheet_name)
+                
+                # --- 스타일링 (openpyxl) ---
+                ws = writer.sheets[sheet_name]
+                
+                # 1. 기본 폰트 및 정렬
+                font_basic = Font(name='맑은 고딕', size=10)
+                align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                border_thin = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+                border_thick_blue = Border(left=Side(style='medium', color='0000FF'), right=Side(style='medium', color='0000FF'), 
+                                           top=Side(style='medium', color='0000FF'), bottom=Side(style='medium', color='0000FF'))
+
+                # 전체 셀 순회하며 기본 스타일 적용
+                max_row = ws.max_row
+                max_col = ws.max_column
+                
+                for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+                    for cell in row:
+                        cell.font = font_basic
+                        cell.alignment = align_center
+                        cell.border = border_thin
+
+                # 2. 헤더 스타일 (1행)
+                for cell in ws[1]:
+                    cell.font = Font(name='맑은 고딕', size=10, bold=True, color='FFFFFF')
+                    cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+
+                # 3. 인덱스 열 스타일 (A열: 투표소명, B열: 장비수)
+                for row in range(2, max_row + 1):
+                    ws.cell(row=row, column=1).font = Font(name='맑은 고딕', size=10, bold=True) # 투표소명
+                    ws.cell(row=row, column=2).font = Font(name='맑은 고딕', size=9) # 장비수
+
+                # 4. 조건부 서식 (히트맵 효과) - C열(전체평균)부터 끝까지, 3행(데이터 시작)부터 끝까지
+                # 데이터 영역 정의 (시간대별 수치)
+                # 열 인덱스 3은 '전체평균'이므로, 실제 시간대 데이터는 4부터 시작
+                # 하지만 이미지상 '전체평균'도 색상이 칠해지므로 3부터 시작
+                
+                # 색조 규칙: 초록색 계열 (Green Scale)
+                rule = ColorScaleRule(start_type='min', start_color='F7FCF5',
+                                      mid_type='percentile', mid_value=50, mid_color='74C476',
+                                      end_type='max', end_color='006D2C')
+                
+                # 데이터 영역 (숫자가 있는 부분만)
+                # 시간대평균(2행)을 제외하고 3행부터 적용
+                range_string = f"{get_column_letter(3)}3:{get_column_letter(max_col)}{max_row}"
+                ws.conditional_formatting.add(range_string, rule)
+
+                # 5. 파란색 테두리 강조 (전체평균 열 & 시간대평균 행)
+                # 시간대평균 행 (2행)
+                for col in range(1, max_col + 1):
+                    ws.cell(row=2, column=col).border = Border(top=Side(style='medium', color='0000FF'), 
+                                                               bottom=Side(style='medium', color='0000FF'),
+                                                               left=Side(style='thin'), right=Side(style='thin'))
+                    ws.cell(row=2, column=col).font = Font(name='맑은 고딕', bold=True)
+                    # 수치 포맷
+                    if col >= 3:
+                        ws.cell(row=2, column=col).number_format = '0.0'
+
+                # 전체평균 열 (C열 = 3번째)
+                for row in range(1, max_row + 1):
+                    cell = ws.cell(row=row, column=3)
+                    prev_border = cell.border
+                    # 기존 테두리 유지하며 좌우만 파란색 (상단/하단은 2행과 겹칠 때 처리 주의)
+                    cell.border = Border(left=Side(style='medium', color='0000FF'), 
+                                         right=Side(style='medium', color='0000FF'),
+                                         top=prev_border.top, bottom=prev_border.bottom)
+                    if row > 2: # 헤더와 평균행 제외하고 데이터 부분은 소수점 포맷
+                         # 괄호가 섞인 텍스트일 수 있으므로 try-except 없이 텍스트 그대로 둠
+                         pass
+
+                # 교차지점 (2행 3열: 전체 평균의 평균) - 완전 파란 테두리
+                ws.cell(row=2, column=3).border = border_thick_blue
+                
+                # 6. 컬럼 너비 조정
+                ws.column_dimensions['A'].width = 15 # 투표소명
+                ws.column_dimensions['B'].width = 10 # 장비수
+                ws.column_dimensions['C'].width = 12 # 전체평균
+                for col in range(4, max_col + 1):
+                    ws.column_dimensions[get_column_letter(col)].width = 6 # 시간대
+    
     def _read_equip_summary(self):
         """
         장비현황 파일의 D7(총 장비수), H7(예비수) 셀을 읽어옵니다.
