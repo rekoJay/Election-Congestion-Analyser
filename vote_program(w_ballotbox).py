@@ -22,127 +22,160 @@ class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("사전투표장비 배분 최적화 시스템")
-        self.root.geometry("680x800") 
-        self.root.resizable(False, True) 
+        # [수정] 가로로 넓고 세로는 적당한 크기로 변경 (한눈에 보기 위함)
+        self.root.geometry("1100x700") 
+        self.root.resizable(True, True) 
+        
         self.vote_files = []
         self.cached_data = {} 
         self.equipment_file = None
         self.file_past_elect = None   
         self.file_recent_elect = None 
         
-        self.region_name = "" # [추가] 지역명 저장 변수 (예: 서울 성동구)
+        self.region_name = "" 
 
         self.last_reserve_count = 5
         self.station_data = {} 
         
         self.create_widgets()
 
-    # [수정] 통합 조정률 텍스트 생성 헬퍼
+    # [수정] 통합 조정률 텍스트 생성 헬퍼 (기존 유지)
     def _get_merged_rate_text(self, r_intra, r_extra):
         def _fmt(val):
-            # [변경] 화살표 제거하고 +, - 기호로 통일 (가독성 향상)
             if val > 0: return f"+ {val}%"        
             elif val < 0: return f"- {abs(val)}%" 
             else: return "-"
-            
         if r_intra == r_extra:
             return _fmt(r_intra)
         else:
             return f"관내:{_fmt(r_intra)} / 관외:{_fmt(r_extra)}"
             
     def create_widgets(self):
-        # [기존 유지] 메인 스크롤 프레임 설정
-        main_canvas = tk.Canvas(self.root)
-        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=main_canvas.yview)
-        scrollable_frame = ttk.Frame(main_canvas)
+        # [구조 변경] 좌우 2단 분할 레이아웃 (PanedWindow 대신 Frame 사용)
+        main_container = ttk.Frame(self.root, padding="15")
+        main_container.pack(fill="both", expand=True)
 
-        frame_id = main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        main_canvas.configure(yscrollcommand=scrollbar.set)
+        # === [좌측 패널] 컨트롤러 (파일, 옵션, 실행버튼) ===
+        # 너비 고정 (약 320px 정도)
+        left_panel = ttk.Frame(main_container, width=320)
+        left_panel.pack(side="left", fill="y", expand=False, padx=(0, 15))
+        left_panel.pack_propagate(False) # 프레임 크기 고정
 
-        def _on_canvas_configure(e):
-            main_canvas.itemconfig(frame_id, width=e.width)
-        
-        def _on_frame_configure(e):
-            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+        # === [우측 패널] 데이터 뷰어 (리스트, 슬라이더) ===
+        right_panel = ttk.Frame(main_container)
+        right_panel.pack(side="right", fill="both", expand=True)
 
-        main_canvas.bind("<Configure>", _on_canvas_configure)
-        scrollable_frame.bind("<Configure>", _on_frame_configure)
-
-        # [변경] 상태바를 위해 pack 옵션 조정 (Canvas는 윗부분만 차지)
-        main_canvas.pack(side="top", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        content_frame = ttk.Frame(scrollable_frame, padding="20")
-        content_frame.pack(fill="both", expand=True)
-
-        # 1. 기초 데이터 로드 (기존 동일)
-        frame_data = ttk.LabelFrame(content_frame, text=" 1. 기초 데이터 로드 ", padding="10")
-        frame_data.pack(fill="x", pady=(0, 10))
+        # -------------------------------------------------------
+        # [좌측 1] 기초 데이터 로드
+        # -------------------------------------------------------
+        frame_data = ttk.LabelFrame(left_panel, text=" 1. 기초 데이터 로드 ", padding="10")
+        frame_data.pack(fill="x", pady=(0, 15))
         
         btn_files = ttk.Button(frame_data, text="📂 투표 데이터 파일 업로드", command=self.select_vote_files)
-        btn_files.pack(fill="x", ipady=3)
-        self.lbl_file_count = ttk.Label(frame_data, text="파일 없음", foreground="gray", font=("맑은 고딕", 8))
-        self.lbl_file_count.pack(pady=(2, 5))
+        btn_files.pack(fill="x", ipady=5) # 버튼 높이 키움
+        self.lbl_file_count = ttk.Label(frame_data, text="파일 없음", foreground="gray", font=("맑은 고딕", 9))
+        self.lbl_file_count.pack(pady=(2, 8))
 
         btn_equip = ttk.Button(frame_data, text="📂 장비 현황 파일 업로드", command=self.select_equip_file)
-        btn_equip.pack(fill="x", ipady=3)
-        self.lbl_equip_status = ttk.Label(frame_data, text="파일 미선택 (기본값: 1대 적용)", foreground="gray", font=("맑은 고딕", 8))
-        self.lbl_equip_status.pack(pady=(2, 5))
+        btn_equip.pack(fill="x", ipady=5)
+        self.lbl_equip_status = ttk.Label(frame_data, text="파일 미선택 (기본값: 1대)", foreground="gray", font=("맑은 고딕", 9))
+        self.lbl_equip_status.pack(pady=(2, 8))
 
         frame_elect = ttk.Frame(frame_data)
         frame_elect.pack(fill="x", pady=(5, 0))
-        btn_past = ttk.Button(frame_elect, text="📂 ① 과거 선거인수", command=self.select_past_file)
+        btn_past = ttk.Button(frame_elect, text="📂 ① 과거 선거인", command=self.select_past_file)
         btn_past.pack(side="left", fill="x", expand=True, padx=(0, 2))
-        btn_recent = ttk.Button(frame_elect, text="📂 ② 최근 선거인수", command=self.select_recent_file)
+        btn_recent = ttk.Button(frame_elect, text="📂 ② 최근 선거인", command=self.select_recent_file)
         btn_recent.pack(side="right", fill="x", expand=True, padx=(2, 0))
         
-        self.lbl_elect_status = ttk.Label(frame_data, text="파일 미선택 (변동률 미적용)", foreground="gray", font=("맑은 고딕", 8))
-        self.lbl_elect_status.pack(pady=(2, 0))
+        self.lbl_elect_status = ttk.Label(frame_data, text="파일 미선택 (변동률 미적용)", foreground="gray", font=("맑은 고딕", 9))
+        self.lbl_elect_status.pack(pady=(2, 5))
         
-        ttk.Separator(frame_data, orient="horizontal").pack(fill="x", pady=(10, 5))
+        ttk.Separator(frame_data, orient="horizontal").pack(fill="x", pady=(8, 8))
         btn_reset = ttk.Button(frame_data, text="🔄 모든 데이터 초기화", command=self.reset_all)
-        btn_reset.pack(fill="x", ipady=3)
+        btn_reset.pack(fill="x")
         
-        # 2. 시뮬레이션 설정 (기존 동일)
-        frame_sim = ttk.LabelFrame(content_frame, text=" 2. 시뮬레이션 설정 (데이터 튜닝) ", padding="10")
-        frame_sim.pack(fill="x", pady=(0, 10))
+        # -------------------------------------------------------
+        # [좌측 2] 보기 옵션 (위로 이동됨)
+        # -------------------------------------------------------
+        frame_option = ttk.LabelFrame(left_panel, text=" 2. 보기 옵션 ", padding="10")
+        frame_option.pack(fill="x", pady=(0, 15))
         
+        self.var_day1 = tk.BooleanVar(value=True)
+        self.var_day2 = tk.BooleanVar(value=True)
+        self.var_intra = tk.BooleanVar(value=True)
+        self.var_extra = tk.BooleanVar(value=True)
+        self.var_day_all = tk.BooleanVar(value=True) 
+
+        # 옵션들을 2줄로 배치
+        chk_f1 = ttk.Frame(frame_option)
+        chk_f1.pack(fill="x", pady=2)
+        ttk.Label(chk_f1, text="기간: ").pack(side="left")
+        ttk.Checkbutton(chk_f1, text="1일", variable=self.var_day1).pack(side="left", padx=2)
+        ttk.Checkbutton(chk_f1, text="2일", variable=self.var_day2).pack(side="left", padx=2)
+        ttk.Checkbutton(chk_f1, text="전체", variable=self.var_day_all).pack(side="left", padx=2)
+        
+        chk_f2 = ttk.Frame(frame_option)
+        chk_f2.pack(fill="x", pady=2)
+        ttk.Label(chk_f2, text="구분: ").pack(side="left")
+        ttk.Checkbutton(chk_f2, text="관내", variable=self.var_intra).pack(side="left", padx=5)
+        ttk.Checkbutton(chk_f2, text="관외", variable=self.var_extra).pack(side="left", padx=5)
+
+        # -------------------------------------------------------
+        # [좌측 3] 실행 및 부가기능 (크고 잘 보이게 배치)
+        # -------------------------------------------------------
+        frame_actions = ttk.LabelFrame(left_panel, text=" 3. 실행 및 분석 ", padding="10")
+        frame_actions.pack(fill="both", expand=True) # 남은 공간 채움
+
+        btn_booth = ttk.Button(frame_actions, text="🗳️ 기표대 적정 수량 산출", command=self.open_booth_calc_popup)
+        btn_booth.pack(fill="x", ipady=8, pady=(0, 10))
+        
+        # 시뮬레이션 버튼 강조
+        style = ttk.Style()
+        style.configure("Accent.TButton", font=("맑은 고딕", 11, "bold"), foreground="blue")
+        btn_run = ttk.Button(frame_actions, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation, style="Accent.TButton")
+        btn_run.pack(fill="x", ipady=15, side="bottom", pady=5) # 제일 아래에 크게
+
+        # -------------------------------------------------------
+        # [우측 패널] 시뮬레이션 설정 및 리스트 (넓은 공간 활용)
+        # -------------------------------------------------------
+        # 1. 시뮬레이션 설정 (상단)
+        frame_sim = ttk.LabelFrame(right_panel, text=" 투표소별 설정 및 현황 ", padding="10")
+        frame_sim.pack(fill="both", expand=True)
+        
+        # 슬라이더 영역
         frame_rate = ttk.Frame(frame_sim)
         frame_rate.pack(fill="x", pady=(0, 10))
-        ttk.Label(frame_rate, text="📉 전체 투표자 증가율: ").pack(side="left")
         
+        ttk.Label(frame_rate, text="📉 전체 투표자 증가율 적용: ").pack(side="left")
         self.var_rate = tk.DoubleVar(value=0.0)
-        self.lbl_rate = ttk.Label(frame_rate, text="0% (변동 없음)", foreground="blue", font=("맑은 고딕", 9, "bold"))
+        self.lbl_rate = ttk.Label(frame_rate, text="0% (변동 없음)", foreground="blue", font=("맑은 고딕", 10, "bold"))
         
-        scale = ttk.Scale(frame_sim, from_=-30, to=30, variable=self.var_rate, command=self.on_slider_change)
-        scale.pack(fill="x", padx=10, pady=(0,10))
-        self.lbl_rate.pack(side="right")
-
-        frame_balance = ttk.Frame(frame_sim)
-        frame_balance.pack(fill="x", pady=(0, 5))
-
-        ttk.Label(frame_balance, text="📋 투표소별 설정 (수정: 더블클릭)", font=("맑은 고딕", 9, "bold")).pack(side="left")
+        scale = ttk.Scale(frame_rate, from_=-30, to=30, variable=self.var_rate, command=self.on_slider_change)
+        scale.pack(side="left", fill="x", expand=True, padx=15)
+        self.lbl_rate.pack(side="left")
         
-        # [변경] 기표대 버튼 제거 (아래로 이동), 자동 배분 버튼만 유지
-        btn_balance = ttk.Button(frame_balance, text="⚖️ 장비 자동 배분", command=self.open_balance_popup)
-        btn_balance.pack(side="right")
+        # 자동 배분 버튼
+        btn_balance = ttk.Button(frame_rate, text="⚖️ 장비 자동 배분", command=self.open_balance_popup)
+        btn_balance.pack(side="right", padx=(10, 0))
 
+        # 트리뷰 (리스트) 영역 - 꽉 채우기
         tree_frame = ttk.Frame(frame_sim)
-        tree_frame.pack(fill="both", expand=True, pady=5)
+        tree_frame.pack(fill="both", expand=True)
         
         columns = ("station", "elect_diff", "intra", "extra", "rate_merged")
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12)
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
         
         self.tree.heading("station", text="투표소명")
-        self.tree.heading("elect_diff", text="선거인수")
+        self.tree.heading("elect_diff", text="선거인수 변동")
         self.tree.heading("intra", text="관내장비")
         self.tree.heading("extra", text="관외장비")
         self.tree.heading("rate_merged", text="조정률(관내/외)") 
         
-        self.tree.column("station", width=150)
-        self.tree.column("elect_diff", width=90, anchor="center")
-        self.tree.column("intra", width=60, anchor="center")
-        self.tree.column("extra", width=60, anchor="center")
+        self.tree.column("station", width=120)
+        self.tree.column("elect_diff", width=100, anchor="center")
+        self.tree.column("intra", width=80, anchor="center")
+        self.tree.column("extra", width=80, anchor="center")
         self.tree.column("rate_merged", width=150, anchor="center")
         
         scrollbar_tree = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -152,43 +185,8 @@ class ElectionAnalyzerApp:
         scrollbar_tree.pack(side="right", fill="y")
         
         self.tree.bind("<Double-1>", self.on_tree_double_click)
-
-        # 3. 보기 옵션 (기존 동일)
-        frame_option = ttk.LabelFrame(content_frame, text=" 3. 보기 옵션 ", padding="10")
-        frame_option.pack(fill="x", pady=(0, 10))
         
-        self.var_day1 = tk.BooleanVar(value=True)
-        self.var_day2 = tk.BooleanVar(value=True)
-        self.var_intra = tk.BooleanVar(value=True)
-        self.var_extra = tk.BooleanVar(value=True)
-        self.var_day_all = tk.BooleanVar(value=True) 
-
-        chk_frame = ttk.Frame(frame_option)
-        chk_frame.pack(fill="x")
-        
-        ttk.Label(chk_frame, text="기간: ").pack(side="left")
-        ttk.Checkbutton(chk_frame, text="1일차", variable=self.var_day1).pack(side="left", padx=5)
-        ttk.Checkbutton(chk_frame, text="2일차", variable=self.var_day2).pack(side="left", padx=5)
-        ttk.Checkbutton(chk_frame, text="전체(평균)", variable=self.var_day_all).pack(side="left", padx=5)
-        
-        ttk.Separator(chk_frame, orient="vertical").pack(side="left", fill="y", padx=15)
-        ttk.Label(chk_frame, text="구분: ").pack(side="left")
-        ttk.Checkbutton(chk_frame, text="관내", variable=self.var_intra).pack(side="left", padx=5)
-        ttk.Checkbutton(chk_frame, text="관외", variable=self.var_extra).pack(side="left", padx=5)
-        
-        # [핵심 변경] 4. 부가 기능 (로그창 대신 여기에 버튼 추가)
-        frame_actions = ttk.LabelFrame(content_frame, text=" 4. 실행 및 부가기능 ", padding="10")
-        frame_actions.pack(fill="x", pady=(0, 10))
-
-        # 시뮬레이션 버튼
-        btn_run = ttk.Button(frame_actions, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation)
-        btn_run.pack(fill="x", ipady=8, pady=(0, 5))
-
-        # 기표대 산출 버튼 (여기로 이동!)
-        btn_booth = ttk.Button(frame_actions, text="🗳️ 기표대 적정 수량 산출 (팝업)", command=self.open_booth_calc_popup)
-        btn_booth.pack(fill="x", ipady=8)
-        
-        # 5. [신규] 하단 상태 표시줄 (Status Bar) - 로그창 대체
+        # 5. 상태 표시줄 (Status Bar)
         self.lbl_status = ttk.Label(self.root, text=" 준비됨", relief="sunken", anchor="w", font=("맑은 고딕", 9))
         self.lbl_status.pack(side="bottom", fill="x")
 
@@ -1219,60 +1217,107 @@ class ElectionAnalyzerApp:
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        # 계산 로직
+        # 계산 로직 수정본
+        # [수정된 계산 로직] 누적 데이터를 '시간당 순수 투표자 수'로 변환하여 피크타임 계산
         def _calculate():
             # 1. 표 비우기
             for item in tree.get_children():
                 tree.delete(item)
 
             try:
-                # [핵심] 유저가 입력한 값을 여기서 가져옵니다 (.get())
                 t_intra = int(entry_intra_time.get())
                 t_extra = int(entry_extra_time.get())
-                
-                if t_intra <= 0 or t_extra <= 0:
-                    raise ValueError
+                if t_intra <= 0 or t_extra <= 0: raise ValueError
             except:
                 messagebox.showerror("오류", "시간은 0보다 큰 숫자로 입력해주세요.")
                 return
 
             self._ensure_data_loaded()
             
-            # 데이터 집계 (투표소별/시간대별)
-            stats = {} 
+            # (1) 데이터 구조화: temp_data[투표소명][시간] = {intra, extra}
+            temp_data = {}
+            all_times = set()
+
             for file in self.vote_files:
                 if file not in self.cached_data: continue
                 df, day, time = self.cached_data[file]
                 if time is None: continue
-
+                
+                # 누적 데이터 계산을 위해 '시간' 정보만 수집 (날짜 구분 없이 시간대별 추이 파악)
+                # 만약 1일차/2일차를 구분해야 한다면 (day, time) 키 사용 필요
+                # 여기서는 '가장 바쁜 시간대'를 찾는 것이므로 날짜별로 각각 계산해서 후보군에 넣습니다.
+                
                 for _, row in df.iterrows():
                     st_name = str(row['사전투표소명']).strip()
                     if st_name not in self.station_data: continue
 
-                    if st_name not in stats: stats[st_name] = {}
-                    if time not in stats[st_name]: stats[st_name][time] = {'intra': 0, 'extra': 0}
+                    if st_name not in temp_data: temp_data[st_name] = {}
+                    
+                    # 키를 (day, time)으로 설정하여 1일차 7시, 2일차 7시를 구분
+                    time_key = (day, time)
+                    all_times.add(time_key)
+                    
+                    if time_key not in temp_data[st_name]:
+                        temp_data[st_name][time_key] = {'intra': 0, 'extra': 0}
 
                     # 증가율 반영
                     d = self.station_data[st_name]
-                    factor_i = (1 + d.get('elect_rate',0)/100) * (1 + d['rate_intra']/100)
-                    factor_e = (1 + d['rate_extra']/100)
+                    factor_i = (1 + d.get('elect_rate',0)/100.0) * (1 + d['rate_intra']/100.0)
+                    factor_e = (1 + d['rate_extra']/100.0)
 
                     try:
-                        stats[st_name][time]['intra'] += float(row['관내사전투표자수']) * factor_i
-                        stats[st_name][time]['extra'] += float(row['관외사전투표자수']) * factor_e
+                        # 파일이 여러 개일 경우 += 가 위험할 수 있으나, (day, time) 키가 유니크하다면 = 로 덮어쓰거나 
+                        # 분할 파일인 경우 += 가 맞음. 여기서는 안전하게 += 사용 (보통 시간대별 파일은 1개씩이므로)
+                        temp_data[st_name][time_key]['intra'] += float(row['관내사전투표자수']) * factor_i
+                        temp_data[st_name][time_key]['extra'] += float(row['관외사전투표자수']) * factor_e
                     except: pass
 
-            # 계산 및 출력
+            # (2) 시간순 정렬 및 '구간별 순증가분(Delta)' 계산
+            sorted_keys = sorted(list(all_times)) # [(1,6), (1,7), ... (2,6), (2,7)...]
+            
             import math
-            for st_name, times_data in stats.items():
-                # Top 3 로직
-                vals_i = sorted([v['intra'] for v in times_data.values()], reverse=True)[:3]
-                vals_e = sorted([v['extra'] for v in times_data.values()], reverse=True)[:3]
+            
+            for st_name, time_map in temp_data.items():
+                hourly_deltas_intra = []
+                hourly_deltas_extra = []
+                
+                # 1일차, 2일차 각각 독립적으로 누적 계산 (날짜 바뀌면 prev 초기화)
+                # 날짜별로 그룹화하여 처리
+                from collections import defaultdict
+                day_groups = defaultdict(list)
+                for d, t in sorted_keys:
+                    day_groups[d].append((d, t))
+                
+                for day in day_groups:
+                    prev_i = 0
+                    prev_e = 0
+                    times_in_day = sorted(day_groups[day]) # 해당 일자의 시간들 정렬
+                    
+                    for key in times_in_day:
+                        if key not in time_map: continue
+                        
+                        curr_i = time_map[key]['intra']
+                        curr_e = time_map[key]['extra']
+                        
+                        delta_i = max(0, curr_i - prev_i)
+                        delta_e = max(0, curr_e - prev_e)
+                        
+                        hourly_deltas_intra.append(delta_i)
+                        hourly_deltas_extra.append(delta_e)
+                        
+                        prev_i = curr_i
+                        prev_e = curr_e
+
+                # (3) 피크타임(Top 3) 평균 계산
+                # 순수 시간당 투표자 수(delta) 중 가장 높았던 3개를 뽑음
+                vals_i = sorted(hourly_deltas_intra, reverse=True)[:3]
+                vals_e = sorted(hourly_deltas_extra, reverse=True)[:3]
                 
                 avg_i = sum(vals_i) / len(vals_i) if vals_i else 0
                 avg_e = sum(vals_e) / len(vals_e) if vals_e else 0
                 
-                # [공식] 필요수량 = (시간당 목표인원 × 유저가 입력한 시간) ÷ 3600
+                # (4) 필요 기표대 수 산출
+                # 공식: (피크타임 시간당 인원 * 1인당 소요초) / 3600초 = 필요 개수
                 req_intra = math.ceil((avg_i * t_intra) / 3600)
                 req_extra = math.ceil((avg_e * t_extra) / 3600)
                 
@@ -1294,40 +1339,94 @@ class ElectionAnalyzerApp:
         target_count = total_assets - total_reserve
         num_stations = len(self.station_data)
         
-        # 2. 기초 데이터 집계 (투표소별 총 투표자 수 예측)
+        # ---------------------------------------------------------
+        # [수정] 2. 기초 데이터 집계 (시각화 로직과 동일한 알고리즘 적용)
+        # ---------------------------------------------------------
         station_stats = {}
-        
+
+        # (1) 데이터를 시간 순서대로 정렬하기 위해 구조화
+        # 구조: temp_data[투표소명][시간] = {'intra':값, 'extra':값}
+        temp_data = {}
+        all_times = set()
+
         for file in self.vote_files:
             if file not in self.cached_data: continue
-            
-            # [수정] 시간대 정보를 확인하기 위해 변수(time)를 받습니다.
             df, day, time = self.cached_data[file]
             
-            # [추가] 11시 ~ 18시 사이의 데이터가 아니면 건너뜁니다.
-            # (데이터 파일이 시간대별로 쪼개져 있으므로, 파일 자체를 스킵하면 됩니다.)
-            if time is None or not (11 <= time <= 18):
-                continue
+            # 시간이 없는 데이터는 제외
+            if time is None: continue
             
+            all_times.add(time)
+
             for idx, row in df.iterrows():
                 st_name = str(row['사전투표소명']).strip()
                 if st_name not in self.station_data: continue 
                 
-                if st_name not in station_stats:
-                    station_stats[st_name] = {'intra_voters': 0, 'extra_voters': 0}
+                if st_name not in temp_data:
+                    temp_data[st_name] = {}
                 
-                # 분리된 설정값 가져오기
+                # 예측 비율(가중치) 적용
                 user_rate_intra = self.station_data[st_name]['rate_intra']
                 user_rate_extra = self.station_data[st_name]['rate_extra']
                 elect_rate = self.station_data[st_name].get('elect_rate', 0)
                 
-                # 시뮬레이션과 동일한 공식 적용
                 factor_intra = (1 + (elect_rate / 100.0)) * (1 + (user_rate_intra / 100.0))
                 factor_extra = (1 + (user_rate_extra / 100.0))
                 
                 try:
-                    station_stats[st_name]['intra_voters'] += float(row['관내사전투표자수']) * factor_intra
-                    station_stats[st_name]['extra_voters'] += float(row['관외사전투표자수']) * factor_extra
+                    v_intra = float(row['관내사전투표자수']) * factor_intra
+                    v_extra = float(row['관외사전투표자수']) * factor_extra
+                    
+                    temp_data[st_name][time] = {
+                        'intra': v_intra,
+                        'extra': v_extra
+                    }
                 except: pass
+        
+        # (2) 시간순으로 순회하며 '구간별 순증가분(Delta)' 계산 및 11~18시 필터링
+        sorted_times = sorted(list(all_times)) # 시간을 오름차순 정렬 (예: 7, 8, ..., 18)
+        
+        for st_name, time_map in temp_data.items():
+            # 집계용 변수 초기화
+            total_intra_in_target_time = 0
+            total_extra_in_target_time = 0
+            
+            # 이전 시간대 누적값 (초기값 0)
+            prev_intra = 0
+            prev_extra = 0
+            
+            for t in sorted_times:
+                # 해당 시간대 데이터가 없으면 건너뜀 (단, prev는 유지해야 함 - 누적데이터이므로)
+                # 만약 중간 데이터가 빠져도, 다음 데이터에서 (현재 - 과거)를 하면 그 사이 증가분이 한꺼번에 반영됨
+                if t not in time_map:
+                    continue
+                
+                curr_intra = time_map[t]['intra']
+                curr_extra = time_map[t]['extra']
+                
+                # [핵심] 현재 누적값 - 이전 누적값 = 해당 시간대 순수 투표자 수
+                delta_intra = curr_intra - prev_intra
+                delta_extra = curr_extra - prev_extra
+                
+                # 음수 보정 (데이터 오류 등)
+                if delta_intra < 0: delta_intra = 0
+                if delta_extra < 0: delta_extra = 0
+                
+                # [필터링] 우리가 원하는 11시 ~ 18시 사이의 데이터만 합산
+                if 11 <= t <= 18:
+                    total_intra_in_target_time += delta_intra
+                    total_extra_in_target_time += delta_extra
+                
+                # 다음 루프를 위해 현재 값을 '이전 값'으로 갱신
+                prev_intra = curr_intra
+                prev_extra = curr_extra
+            
+            # 최종 계산된 값을 station_stats에 저장
+            station_stats[st_name] = {
+                'intra_voters': total_intra_in_target_time,
+                'extra_voters': total_extra_in_target_time
+            }
+        # ---------------------------------------------------------
         
         # 3. 배분 알고리즘 시작
         # (1) 기본 할당: 모든 투표소의 관내/관외에 1대씩 강제 할당
