@@ -1,4 +1,4 @@
-\import sys
+import sys
 import pandas as pd
 import re
 import os
@@ -1170,40 +1170,94 @@ class ElectionAnalyzerApp:
         target_count = total_assets - total_reserve
         num_stations = len(self.station_data)
         
-        # 2. 기초 데이터 집계 (투표소별 총 투표자 수 예측)
+        # ---------------------------------------------------------
+        # [수정] 2. 기초 데이터 집계 (시각화 로직과 동일한 알고리즘 적용)
+        # ---------------------------------------------------------
         station_stats = {}
-        
+
+        # (1) 데이터를 시간 순서대로 정렬하기 위해 구조화
+        # 구조: temp_data[투표소명][시간] = {'intra':값, 'extra':값}
+        temp_data = {}
+        all_times = set()
+
         for file in self.vote_files:
             if file not in self.cached_data: continue
-            
-            # [수정] 시간대 정보를 확인하기 위해 변수(time)를 받습니다.
             df, day, time = self.cached_data[file]
             
-            # [추가] 11시 ~ 18시 사이의 데이터가 아니면 건너뜁니다.
-            # (데이터 파일이 시간대별로 쪼개져 있으므로, 파일 자체를 스킵하면 됩니다.)
-            if time is None or not (11 <= time <= 18):
-                continue
+            # 시간이 없는 데이터는 제외
+            if time is None: continue
             
+            all_times.add(time)
+
             for idx, row in df.iterrows():
                 st_name = str(row['사전투표소명']).strip()
                 if st_name not in self.station_data: continue 
                 
-                if st_name not in station_stats:
-                    station_stats[st_name] = {'intra_voters': 0, 'extra_voters': 0}
+                if st_name not in temp_data:
+                    temp_data[st_name] = {}
                 
-                # 분리된 설정값 가져오기
+                # 예측 비율(가중치) 적용
                 user_rate_intra = self.station_data[st_name]['rate_intra']
                 user_rate_extra = self.station_data[st_name]['rate_extra']
                 elect_rate = self.station_data[st_name].get('elect_rate', 0)
                 
-                # 시뮬레이션과 동일한 공식 적용
                 factor_intra = (1 + (elect_rate / 100.0)) * (1 + (user_rate_intra / 100.0))
                 factor_extra = (1 + (user_rate_extra / 100.0))
                 
                 try:
-                    station_stats[st_name]['intra_voters'] += float(row['관내사전투표자수']) * factor_intra
-                    station_stats[st_name]['extra_voters'] += float(row['관외사전투표자수']) * factor_extra
+                    v_intra = float(row['관내사전투표자수']) * factor_intra
+                    v_extra = float(row['관외사전투표자수']) * factor_extra
+                    
+                    temp_data[st_name][time] = {
+                        'intra': v_intra,
+                        'extra': v_extra
+                    }
                 except: pass
+        
+        # (2) 시간순으로 순회하며 '구간별 순증가분(Delta)' 계산 및 11~18시 필터링
+        sorted_times = sorted(list(all_times)) # 시간을 오름차순 정렬 (예: 7, 8, ..., 18)
+        
+        for st_name, time_map in temp_data.items():
+            # 집계용 변수 초기화
+            total_intra_in_target_time = 0
+            total_extra_in_target_time = 0
+            
+            # 이전 시간대 누적값 (초기값 0)
+            prev_intra = 0
+            prev_extra = 0
+            
+            for t in sorted_times:
+                # 해당 시간대 데이터가 없으면 건너뜀 (단, prev는 유지해야 함 - 누적데이터이므로)
+                # 만약 중간 데이터가 빠져도, 다음 데이터에서 (현재 - 과거)를 하면 그 사이 증가분이 한꺼번에 반영됨
+                if t not in time_map:
+                    continue
+                
+                curr_intra = time_map[t]['intra']
+                curr_extra = time_map[t]['extra']
+                
+                # [핵심] 현재 누적값 - 이전 누적값 = 해당 시간대 순수 투표자 수
+                delta_intra = curr_intra - prev_intra
+                delta_extra = curr_extra - prev_extra
+                
+                # 음수 보정 (데이터 오류 등)
+                if delta_intra < 0: delta_intra = 0
+                if delta_extra < 0: delta_extra = 0
+                
+                # [필터링] 우리가 원하는 11시 ~ 18시 사이의 데이터만 합산
+                if 11 <= t <= 18:
+                    total_intra_in_target_time += delta_intra
+                    total_extra_in_target_time += delta_extra
+                
+                # 다음 루프를 위해 현재 값을 '이전 값'으로 갱신
+                prev_intra = curr_intra
+                prev_extra = curr_extra
+            
+            # 최종 계산된 값을 station_stats에 저장
+            station_stats[st_name] = {
+                'intra_voters': total_intra_in_target_time,
+                'extra_voters': total_extra_in_target_time
+            }
+        # ---------------------------------------------------------
         
         # 3. 배분 알고리즘 시작
         # (1) 기본 할당: 모든 투표소의 관내/관외에 1대씩 강제 할당
