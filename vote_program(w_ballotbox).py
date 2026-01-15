@@ -51,17 +51,16 @@ class ElectionAnalyzerApp:
             return f"관내:{_fmt(r_intra)} / 관외:{_fmt(r_extra)}"
             
     def create_widgets(self):
-        # [구조 변경] 좌우 2단 분할 레이아웃 (PanedWindow 대신 Frame 사용)
+        # [구조 변경] 좌우 2단 분할 레이아웃
         main_container = ttk.Frame(self.root, padding="15")
         main_container.pack(fill="both", expand=True)
 
-        # === [좌측 패널] 컨트롤러 (파일, 옵션, 실행버튼) ===
-        # 너비 고정 (약 320px 정도)
+        # === [좌측 패널] 컨트롤러 ===
         left_panel = ttk.Frame(main_container, width=320)
         left_panel.pack(side="left", fill="y", expand=False, padx=(0, 15))
-        left_panel.pack_propagate(False) # 프레임 크기 고정
+        left_panel.pack_propagate(False) 
 
-        # === [우측 패널] 데이터 뷰어 (리스트, 슬라이더) ===
+        # === [우측 패널] 데이터 뷰어 ===
         right_panel = ttk.Frame(main_container)
         right_panel.pack(side="right", fill="both", expand=True)
 
@@ -72,7 +71,7 @@ class ElectionAnalyzerApp:
         frame_data.pack(fill="x", pady=(0, 15))
         
         btn_files = ttk.Button(frame_data, text="📂 투표 데이터 파일 업로드", command=self.select_vote_files)
-        btn_files.pack(fill="x", ipady=5) # 버튼 높이 키움
+        btn_files.pack(fill="x", ipady=5)
         self.lbl_file_count = ttk.Label(frame_data, text="파일 없음", foreground="gray", font=("맑은 고딕", 9))
         self.lbl_file_count.pack(pady=(2, 8))
 
@@ -91,12 +90,8 @@ class ElectionAnalyzerApp:
         self.lbl_elect_status = ttk.Label(frame_data, text="파일 미선택 (변동률 미적용)", foreground="gray", font=("맑은 고딕", 9))
         self.lbl_elect_status.pack(pady=(2, 5))
         
-        ttk.Separator(frame_data, orient="horizontal").pack(fill="x", pady=(8, 8))
-        btn_reset = ttk.Button(frame_data, text="🔄 모든 데이터 초기화", command=self.reset_all)
-        btn_reset.pack(fill="x")
-        
         # -------------------------------------------------------
-        # [좌측 2] 보기 옵션 (위로 이동됨)
+        # [좌측 2] 보기 옵션
         # -------------------------------------------------------
         frame_option = ttk.LabelFrame(left_panel, text=" 2. 보기 옵션 ", padding="10")
         frame_option.pack(fill="x", pady=(0, 15))
@@ -107,7 +102,6 @@ class ElectionAnalyzerApp:
         self.var_extra = tk.BooleanVar(value=True)
         self.var_day_all = tk.BooleanVar(value=True) 
 
-        # 옵션들을 2줄로 배치
         chk_f1 = ttk.Frame(frame_option)
         chk_f1.pack(fill="x", pady=2)
         ttk.Label(chk_f1, text="기간: ").pack(side="left")
@@ -121,50 +115,66 @@ class ElectionAnalyzerApp:
         ttk.Checkbutton(chk_f2, text="관내", variable=self.var_intra).pack(side="left", padx=5)
         ttk.Checkbutton(chk_f2, text="관외", variable=self.var_extra).pack(side="left", padx=5)
 
+        # [좌측 하단] 초기화 버튼 (붉은색 / 맨 아래 고정)
+        style = ttk.Style()
+        style.configure("Danger.TButton", foreground="red", font=("맑은 고딕", 9))
+        btn_reset = ttk.Button(left_panel, text="🗑️ 모든 데이터 초기화 (주의)", command=self.reset_all, style="Danger.TButton")
+        btn_reset.pack(side="bottom", fill="x", pady=(10, 0)) 
+
         # -------------------------------------------------------
-        # [좌측 3] 실행 및 부가기능 (크고 잘 보이게 배치)
+        # [좌측 3] 실행 및 부가기능
         # -------------------------------------------------------
         frame_actions = ttk.LabelFrame(left_panel, text=" 3. 실행 및 분석 ", padding="10")
-        frame_actions.pack(fill="both", expand=True) # 남은 공간 채움
+        frame_actions.pack(fill="both", expand=True) 
+
+        # 장비 자동 배분 (기표대 산출 위로 이동)
+        btn_balance = ttk.Button(frame_actions, text="⚖️ 장비 자동 배분 실행", command=self.open_balance_popup)
+        btn_balance.pack(fill="x", ipady=8, pady=(0, 5))
 
         btn_booth = ttk.Button(frame_actions, text="🗳️ 기표대 적정 수량 산출", command=self.open_booth_calc_popup)
         btn_booth.pack(fill="x", ipady=8, pady=(0, 10))
         
-        # 시뮬레이션 버튼 강조
-        style = ttk.Style()
         style.configure("Accent.TButton", font=("맑은 고딕", 11, "bold"), foreground="blue")
         btn_run = ttk.Button(frame_actions, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation, style="Accent.TButton")
-        btn_run.pack(fill="x", ipady=15, side="bottom", pady=5) # 제일 아래에 크게
+        btn_run.pack(fill="x", ipady=15, side="bottom", pady=5) 
 
         # -------------------------------------------------------
-        # [우측 패널] 시뮬레이션 설정 및 리스트 (넓은 공간 활용)
+        # [우측 패널] 시뮬레이션 설정 및 리스트
         # -------------------------------------------------------
-        # 1. 시뮬레이션 설정 (상단)
         frame_sim = ttk.LabelFrame(right_panel, text=" 투표소별 설정 및 현황 ", padding="10")
         frame_sim.pack(fill="both", expand=True)
         
-        # 슬라이더 영역
+        # 슬라이더 영역 (완벽 복구)
         frame_rate = ttk.Frame(frame_sim)
         frame_rate.pack(fill="x", pady=(0, 10))
         
         ttk.Label(frame_rate, text="📉 전체 투표자 증가율 적용: ").pack(side="left")
+        
         self.var_rate = tk.DoubleVar(value=0.0)
+        # 중요: 여기서 생성된 self.lbl_rate가 화면에 표시되고, on_slider_change에서 제어됩니다.
         self.lbl_rate = ttk.Label(frame_rate, text="0% (변동 없음)", foreground="blue", font=("맑은 고딕", 10, "bold"))
         
         scale = ttk.Scale(frame_rate, from_=-30, to=30, variable=self.var_rate, command=self.on_slider_change)
         scale.pack(side="left", fill="x", expand=True, padx=15)
         self.lbl_rate.pack(side="left")
-        
-        # 자동 배분 버튼
-        btn_balance = ttk.Button(frame_rate, text="⚖️ 장비 자동 배분", command=self.open_balance_popup)
-        btn_balance.pack(side="right", padx=(10, 0))
 
-        # 트리뷰 (리스트) 영역 - 꽉 채우기
+        # 팁 문구
+        lbl_tip = ttk.Label(frame_sim, text="💡 목록을 더블 클릭하여 장비 수나 조정률을 개별 수정할 수 있습니다.", 
+                            foreground="gray", font=("맑은 고딕", 9))
+        lbl_tip.pack(anchor="w", pady=(0, 5))
+
+        # 트리뷰 (리스트) 영역
         tree_frame = ttk.Frame(frame_sim)
         tree_frame.pack(fill="both", expand=True)
         
         columns = ("station", "elect_diff", "intra", "extra", "rate_merged")
+        # 줄무늬 스타일 적용
+        style.configure("Treeview", rowheight=25)
+        style.map("Treeview", background=[('selected', '#3B5BDB')])
+        
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        self.tree.tag_configure('even', background='#F0F4F8')
+        self.tree.tag_configure('odd', background='white')
         
         self.tree.heading("station", text="투표소명")
         self.tree.heading("elect_diff", text="선거인수 변동")
@@ -186,7 +196,7 @@ class ElectionAnalyzerApp:
         
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         
-        # 5. 상태 표시줄 (Status Bar)
+        # 상태 표시줄
         self.lbl_status = ttk.Label(self.root, text=" 준비됨", relief="sunken", anchor="w", font=("맑은 고딕", 9))
         self.lbl_status.pack(side="bottom", fill="x")
 
@@ -511,7 +521,8 @@ class ElectionAnalyzerApp:
         self.station_data = {} 
         current_global_rate = int(self.var_rate.get())
 
-        for st in sorted_stations:
+        # [수정] enumerate를 사용하여 인덱스(i)를 함께 가져옴
+        for i, st in enumerate(sorted_stations):
             # 1. 장비 매칭
             matched_data = None
             if st in equip_map:
@@ -529,41 +540,36 @@ class ElectionAnalyzerApp:
                 intra = 1
                 extra = 1
             
-            # 2. 선거인수 증감률 매칭 (별도 변수 elect_rate에 저장)
+            # 2. 선거인수 증감률 매칭
             elect_display = "-"
-            elect_rate = 0 # 선거인수 변동률 기본값 0
+            elect_rate = 0 
             
             if electorate_rates:
                 st_clean = st.replace(" ", "")
                 for dong_name, e_rate in electorate_rates.items():
                     if dong_name in st_clean:
                         elect_rate = e_rate
-                        
                         diff = electorate_diffs.get(dong_name, 0)
                         
-                        # [변경] 화살표 대신 직관적인 +, - 기호 사용
-                        if diff > 0:
-                            elect_display = f"+ {diff:,}" 
-                        elif diff < 0:
-                            elect_display = f"- {abs(diff):,}"
-                        else:
-                            elect_display = "-" # 변동 없음
+                        if diff > 0: elect_display = f"+ {diff:,}" 
+                        elif diff < 0: elect_display = f"- {abs(diff):,}"
+                        else: elect_display = "-" 
                         break
             
-            # [수정] 데이터 저장: rate를 intra/extra로 분리
+            # 데이터 저장
             self.station_data[st] = {
                 'intra': intra, 'extra': extra, 
-                'rate_intra': current_global_rate,  # 관내 사용자 설정
-                'rate_extra': current_global_rate,  # 관외 사용자 설정
-                'elect_rate': elect_rate,           # 선거인수 변동 (고정)
+                'rate_intra': current_global_rate,
+                'rate_extra': current_global_rate,
+                'elect_rate': elect_rate,
                 'org_intra': intra, 'org_extra': extra
             }
             
-            # [수정] tags 옵션 삭제 (원래대로 복구)
             rate_txt = self._get_merged_rate_text(current_global_rate, current_global_rate)
 
-            # 맨 뒤에 있었던 tags=(row_tag,) 부분을 지우세요.
-            self.tree.insert("", "end", iid=st, values=(st, elect_display, intra, extra, rate_txt))
+            # [핵심 수정] 짝수(0,2,4...)는 'even', 홀수(1,3,5...)는 'odd' 태그 적용
+            row_tag = 'even' if i % 2 == 0 else 'odd'
+            self.tree.insert("", "end", iid=st, values=(st, elect_display, intra, extra, rate_txt), tags=(row_tag,))
             
         self.log(f"목록 갱신 완료: 총 {len(sorted_stations)}개 투표소")
 
@@ -1340,14 +1346,14 @@ class ElectionAnalyzerApp:
         num_stations = len(self.station_data)
         
         # ---------------------------------------------------------
-        # [수정] 2. 기초 데이터 집계 (시각화 로직과 동일한 알고리즘 적용)
+        # [수정 완료] 2. 기초 데이터 집계 (날짜+시간 구분 로직 적용)
         # ---------------------------------------------------------
         station_stats = {}
 
-        # (1) 데이터를 시간 순서대로 정렬하기 위해 구조화
-        # 구조: temp_data[투표소명][시간] = {'intra':값, 'extra':값}
+        # (1) 데이터를 날짜/시간 순서대로 정렬하기 위해 구조화
+        # 구조: temp_data[투표소명][(day, time)] = {'intra':값, 'extra':값}
         temp_data = {}
-        all_times = set()
+        all_keys = set() # (day, time) 튜플을 저장
 
         for file in self.vote_files:
             if file not in self.cached_data: continue
@@ -1356,7 +1362,9 @@ class ElectionAnalyzerApp:
             # 시간이 없는 데이터는 제외
             if time is None: continue
             
-            all_times.add(time)
+            # [수정] 키를 (day, time)으로 설정하여 날짜별 중복 방지
+            time_key = (day, time)
+            all_keys.add(time_key)
 
             for idx, row in df.iterrows():
                 st_name = str(row['사전투표소명']).strip()
@@ -1377,49 +1385,51 @@ class ElectionAnalyzerApp:
                     v_intra = float(row['관내사전투표자수']) * factor_intra
                     v_extra = float(row['관외사전투표자수']) * factor_extra
                     
-                    temp_data[st_name][time] = {
+                    temp_data[st_name][time_key] = {
                         'intra': v_intra,
                         'extra': v_extra
                     }
                 except: pass
         
-        # (2) 시간순으로 순회하며 '구간별 순증가분(Delta)' 계산 및 11~18시 필터링
-        sorted_times = sorted(list(all_times)) # 시간을 오름차순 정렬 (예: 7, 8, ..., 18)
+        # (2) 시간순으로 순회하며 '구간별 순증가분(Delta)' 계산
+        sorted_keys = sorted(list(all_keys)) # [(1,6), (1,7)... (2,6), (2,7)...] 정렬됨
         
+        # 날짜별로 그룹화 (날짜가 바뀌면 누적 계산을 초기화해야 하므로)
+        from collections import defaultdict
+        day_groups = defaultdict(list)
+        for d, t in sorted_keys:
+            day_groups[d].append((d, t))
+
         for st_name, time_map in temp_data.items():
-            # 집계용 변수 초기화
             total_intra_in_target_time = 0
             total_extra_in_target_time = 0
             
-            # 이전 시간대 누적값 (초기값 0)
-            prev_intra = 0
-            prev_extra = 0
-            
-            for t in sorted_times:
-                # 해당 시간대 데이터가 없으면 건너뜀 (단, prev는 유지해야 함 - 누적데이터이므로)
-                # 만약 중간 데이터가 빠져도, 다음 데이터에서 (현재 - 과거)를 하면 그 사이 증가분이 한꺼번에 반영됨
-                if t not in time_map:
-                    continue
+            # 날짜별로 루프를 돌며 계산
+            for day in day_groups:
+                prev_intra = 0
+                prev_extra = 0
                 
-                curr_intra = time_map[t]['intra']
-                curr_extra = time_map[t]['extra']
-                
-                # [핵심] 현재 누적값 - 이전 누적값 = 해당 시간대 순수 투표자 수
-                delta_intra = curr_intra - prev_intra
-                delta_extra = curr_extra - prev_extra
-                
-                # 음수 보정 (데이터 오류 등)
-                if delta_intra < 0: delta_intra = 0
-                if delta_extra < 0: delta_extra = 0
-                
-                # [필터링] 우리가 원하는 11시 ~ 18시 사이의 데이터만 합산
-                if 11 <= t <= 18:
-                    total_intra_in_target_time += delta_intra
-                    total_extra_in_target_time += delta_extra
-                
-                # 다음 루프를 위해 현재 값을 '이전 값'으로 갱신
-                prev_intra = curr_intra
-                prev_extra = curr_extra
+                # 해당 날짜의 시간대들 순회 (예: 6시, 7시, ... 18시)
+                for key in sorted(day_groups[day]):
+                    if key not in time_map: continue
+                    
+                    day_val, time_val = key
+                    
+                    curr_intra = time_map[key]['intra']
+                    curr_extra = time_map[key]['extra']
+                    
+                    # [핵심] 현재 누적값 - 이전 누적값 = 해당 시간대 순수 투표자 수
+                    delta_intra = max(0, curr_intra - prev_intra)
+                    delta_extra = max(0, curr_extra - prev_extra)
+                    
+                    # [필터링] 우리가 원하는 11시 ~ 18시 사이의 데이터만 합산
+                    if 11 <= time_val <= 18:
+                        total_intra_in_target_time += delta_intra
+                        total_extra_in_target_time += delta_extra
+                    
+                    # 다음 루프를 위해 현재 값을 '이전 값'으로 갱신
+                    prev_intra = curr_intra
+                    prev_extra = curr_extra
             
             # 최종 계산된 값을 station_stats에 저장
             station_stats[st_name] = {
@@ -1430,76 +1440,61 @@ class ElectionAnalyzerApp:
         
         # 3. 배분 알고리즘 시작
         # (1) 기본 할당: 모든 투표소의 관내/관외에 1대씩 강제 할당
-        current_alloc = {} # 장비 배분 현황을 저장할 빈 딕셔너리를 생성합니다.
+        current_alloc = {}
         for st in self.station_data:
-            # 모든 투표소(st)를 순회하며 초기값을 관내 1대, 관외 1대로 설정합니다.
             current_alloc[st] = {'intra': 1, 'extra': 1}
 
-        # 남은 장비(remaining) 계산:
-        # 전체 가용 장비(target_count)에서 방금 나눠준 기본 장비(투표소 수 * 2대)를 뺍니다.
-        # 이제 이 'remaining' 개수만큼 추가 배분을 진행할 수 있습니다.    
+        # 남은 장비(remaining) 계산
         remaining = target_count - (num_stations * 2)
         
         # (2) Greedy Algorithm
-        while remaining > 0: # 남은 장비가 0이 될 때까지 이 반복문을 계속 돌립니다.
-            # 이번 턴(장비 1대)을 받을 '가장 바쁜 곳'을 찾기 위한 비교 변수 초기화
-            max_load = -1 # 현재까지 발견된 '최대 부하(혼잡도)' 값
-            target_info = None # 장비를 받을 대상 정보 (투표소명, 장비타입)
+        while remaining > 0:
+            max_load = -1 
+            target_info = None 
             
-            # 모든 투표소를 하나씩 확인하며 어디가 제일 급한지 비교합니다.
             for st in current_alloc:
-                # 관외 업무 가중치 (1.156)
-                weight_extra = 1.156
-
-                # 현재 이 투표소에 배정된 관내 장비 수 확인
-                curr_intra = current_alloc[st]['intra']
-
-                if curr_intra > 0:
-                    # 관내 부하 = (예측된 관내 투표자 수) / (현재 관내 장비 수)
-                    # 예: 투표자 1000명 / 장비 2대 = 부하 500
-                    load_intra = station_stats[st]['intra_voters'] / curr_intra
+                # [안전장치] 해당 투표소의 데이터가 없으면 0 처리
+                if st not in station_stats:
+                    s_stat = {'intra_voters': 0, 'extra_voters': 0}
                 else:
-                    load_intra = float('inf') # 0대면 무조건 최우선 배정
+                    s_stat = station_stats[st]
 
-                # 만약 이 투표소의 관내 부하가 지금까지 찾은 최대 부하보다 크다면?
+                weight_extra = 1.18
+
+                # 관내 부하 계산
+                curr_intra = current_alloc[st]['intra']
+                if curr_intra > 0:
+                    load_intra = s_stat['intra_voters'] / curr_intra
+                else:
+                    load_intra = float('inf')
+
                 if load_intra > max_load:
-                    max_load = load_intra # 최대 부하 값을 갱신하고
-                    target_info = (st, 'intra') # "현재 1등은 이 투표소의 '관내' 쪽입니다"라고 기록
+                    max_load = load_intra
+                    target_info = (st, 'intra')
                 
-                # 현재 이 투표소에 배정된 관외 장비 수 확인
+                # 관외 부하 계산
                 curr_extra = current_alloc[st]['extra']
                 if curr_extra > 0:
-                    # 관외 부하 = (예측된 관외 투표자 수 * 1.156) / (현재 관외 장비 수)
-                    # *중요: 관외 투표자 수에 가중치를 곱해 부하를 더 높게(더 힘들게) 평가함
-                    load_extra = (station_stats[st]['extra_voters'] * weight_extra) / curr_extra
+                    load_extra = (s_stat['extra_voters'] * weight_extra) / curr_extra
                 else:
-                    load_extra = float('inf') # 0대면 무조건 최우선 배정
+                    load_extra = float('inf')
 
-                # 만약 이 투표소의 관외 부하가 지금까지 찾은 최대 부하(관내 포함)보다 더 크다면?
                 if load_extra > max_load:
-                    max_load = load_extra # 최대 부하 값을 갱신하고
-                    target_info = (st, 'extra') # "현재 1등은 이 투표소의 '관외' 쪽입니다"라고 기록 (덮어쓰기)
+                    max_load = load_extra
+                    target_info = (st, 'extra')
             
-            # for문이 끝나고 최종적으로 선정된 곳(target_info)이 있다면
             if target_info:
-                st_name, r_type = target_info # 이름과 타입(intra/extra)을 꺼냅니다.
-                
-                # 해당 투표소의 해당 타입 장비를 1대 늘려줍니다. (즉시 반영)
-                # *중요: 여기서 +1 된 값은 다음 while 루프가 돌 때 'curr_intra/extra'가 되어
-                # 분모를 키우므로 부하를 낮추는 역할을 합니다.
+                st_name, r_type = target_info
                 current_alloc[st_name][r_type] += 1
-                # 사용할 수 있는 남은 장비 수를 1개 줄입니다.
                 remaining -= 1
             else:
-                # 만약 더 이상 줄 곳이 없거나 오류가 있다면 반복을 종료합니다.
                 break
 
-        # 4. 결과 집계 및 UI 반영 (여기가 에러 났던 부분)
+        # 4. 결과 집계 및 UI 반영
         total_intra_used = 0
         total_extra_used = 0
         
         for item_id in self.tree.get_children():
-            # 안전하게 투표소명 가져오기
             item_values = self.tree.item(item_id)['values']
             if not item_values: continue
             st_name = str(item_values[0])
@@ -1515,25 +1510,17 @@ class ElectionAnalyzerApp:
                 total_intra_used += new_intra
                 total_extra_used += new_extra
                 
-                # [수정] UI 업데이트 시 필요한 변수들 가져오기
+                # UI 업데이트용 변수
                 org_intra = self.station_data[st_name]['org_intra']
                 org_extra = self.station_data[st_name]['org_extra']
-                
-                # KeyError: 'rate' 해결 -> rate_intra, rate_extra 가져오기
                 val_rate_intra = self.station_data[st_name]['rate_intra']
                 val_rate_extra = self.station_data[st_name]['rate_extra']
-                
-                # 기존 선거인수 표시값 유지 (Treeview에서 가져옴)
                 elect_disp = item_values[1]
 
-                # 표시 텍스트 결정
                 disp_intra = f"{org_intra} → {new_intra}" if new_intra != org_intra else str(new_intra)
                 disp_extra = f"{org_extra} → {new_extra}" if new_extra != org_extra else str(new_extra)
-                
-                # [수정] 통합 텍스트 적용
                 rate_txt = self._get_merged_rate_text(val_rate_intra, val_rate_extra)
                 
-                # 5개 컬럼 구조에 맞춰 업데이트
                 self.tree.item(item_id, values=(st_name, elect_disp, disp_intra, disp_extra, rate_txt))
         
         # 5. 결과 메시지
@@ -1545,6 +1532,7 @@ class ElectionAnalyzerApp:
                
         self.log(f"[자동 배분] 총 {total_assets}대 중 {final_used}대 배치 완료. (예비 {total_reserve})")
         messagebox.showinfo("배분 완료", msg)
+        
     def _open_rate_input_dialog(self, st_name, item_id, elect_disp, curr_intra, curr_extra, org_intra, org_extra):
         # 현재 값 가져오기
         cur_r_intra = self.station_data[st_name]['rate_intra']
