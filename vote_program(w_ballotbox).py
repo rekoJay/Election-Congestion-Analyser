@@ -93,7 +93,7 @@ class ElectionAnalyzerApp:
         # -------------------------------------------------------
         # [좌측 2] 보기 옵션
         # -------------------------------------------------------
-        frame_option = ttk.LabelFrame(left_panel, text=" 2. 보기 옵션 ", padding="10")
+        frame_option = ttk.LabelFrame(left_panel, text=" 3. 보기 옵션 ", padding="10")
         frame_option.pack(fill="x", pady=(0, 15))
         
         self.var_day1 = tk.BooleanVar(value=True)
@@ -122,26 +122,34 @@ class ElectionAnalyzerApp:
         btn_reset.pack(side="bottom", fill="x", pady=(10, 0)) 
 
         # -------------------------------------------------------
-        # [좌측 3] 실행 및 부가기능
+        # [좌측 3] 실행 및 분석 (메인 기능) -> 4번으로 변경
         # -------------------------------------------------------
-        frame_actions = ttk.LabelFrame(left_panel, text=" 3. 실행 및 분석 ", padding="10")
-        frame_actions.pack(fill="both", expand=True) 
+        frame_exec = ttk.LabelFrame(left_panel, text=" 4. 실행 및 분석 ", padding="10")
+        frame_exec.pack(fill="x", pady=(0, 15))
 
-        # 장비 자동 배분 (기표대 산출 위로 이동)
-        btn_balance = ttk.Button(frame_actions, text="⚖️ 장비 자동 배분 실행", command=self.open_balance_popup)
-        btn_balance.pack(fill="x", ipady=8, pady=(0, 5))
+        # 메인 기능 1: 장비 배분
+        btn_balance = ttk.Button(frame_exec, text="⚖️ 장비 자동 배분 실행", command=self.open_balance_popup)
+        btn_balance.pack(fill="x", ipady=6, pady=(0, 5))
 
-        btn_booth = ttk.Button(frame_actions, text="🗳️ 기표대 적정 수량 산출", command=self.open_booth_calc_popup)
-        btn_booth.pack(fill="x", ipady=8, pady=(0, 10))
-        
+        # 메인 기능 2: 시뮬레이션 (강조 스타일 유지)
         style.configure("Accent.TButton", font=("맑은 고딕", 11, "bold"), foreground="blue")
-        btn_run = ttk.Button(frame_actions, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation, style="Accent.TButton")
-        btn_run.pack(fill="x", ipady=15, side="bottom", pady=5) 
+        btn_run = ttk.Button(frame_exec, text="🚀 시뮬레이션 / 분석 실행", command=self.run_simulation, style="Accent.TButton")
+        btn_run.pack(fill="x", ipady=10, pady=(5, 0))
+
+        # -------------------------------------------------------
+        # [좌측 5] 부가 기능 (통합)
+        # -------------------------------------------------------
+        frame_sub = ttk.LabelFrame(left_panel, text=" 5. 부가 기능 (산출) ", padding="10")
+        frame_sub.pack(fill="x", expand=False) 
+
+        # 버튼 하나로 통합
+        btn_calc_all = ttk.Button(frame_sub, text="📊 소요량 산출 및 리포트 저장", command=self.open_unified_calc_popup)
+        btn_calc_all.pack(fill="x", ipady=8)
 
         # -------------------------------------------------------
         # [우측 패널] 시뮬레이션 설정 및 리스트
         # -------------------------------------------------------
-        frame_sim = ttk.LabelFrame(right_panel, text=" 투표소별 설정 및 현황 ", padding="10")
+        frame_sim = ttk.LabelFrame(right_panel, text=" 2. 투표소별 설정 및 현황 ", padding="10")
         frame_sim.pack(fill="both", expand=True)
         
         # 슬라이더 영역 (완벽 복구)
@@ -1157,101 +1165,74 @@ class ElectionAnalyzerApp:
 
         ttk.Button(pop, text="최적 배분 실행", command=_run).pack(fill="x", padx=20, pady=20)
 
-    # [추가] 기표대 소요량 산출 팝업 (유저 입력 기반)
-    def open_booth_calc_popup(self):
+    def open_unified_calc_popup(self):
         if not self.vote_files:
             messagebox.showwarning("주의", "먼저 투표 데이터 파일을 로드해주세요.")
             return
 
-        # 1. 팝업창 띄우기
+        # 팝업창 생성
         pop = tk.Toplevel(self.root)
-        pop.title("기표대 적정 수량 산출")
-        pop.geometry("450x550")
+        pop.title("물품 소요량 통합 산출")
+        pop.geometry("350x380") # 입력창만 있으므로 작고 깔끔하게
+        pop.resizable(False, False)
         
         # 화면 중앙 배치
-        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 225
-        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 275
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 175
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 190
         pop.geometry(f"+{x}+{y}")
 
-        # =================================================================
-        # [핵심] 유저 입력 영역: 여기에 시간을 입력하면 계산에 반영됩니다.
-        # =================================================================
-        frame_input = ttk.LabelFrame(pop, text=" [설정] 1인당 예상 기표 소요 시간 ", padding=15)
-        frame_input.pack(fill="x", padx=10, pady=10)
+        # === 1. 기표대 설정 영역 ===
+        frame_booth = ttk.LabelFrame(pop, text=" [기표대] 1인당 예상 기표 시간 (초) ", padding="15")
+        frame_booth.pack(fill="x", padx=15, pady=(15, 10))
 
-        # 관내 입력창
-        f1 = ttk.Frame(frame_input)
-        f1.pack(fill="x", pady=5)
-        ttk.Label(f1, text="① 관내 투표자 (초):", width=20, font=("맑은 고딕", 10, "bold")).pack(side="left")
-        entry_intra_time = ttk.Entry(f1, justify="center", font=("맑은 고딕", 10))
-        entry_intra_time.insert(0, "40") # 기본값 (수정 가능)
-        entry_intra_time.pack(side="right", expand=True, fill="x")
-        
-        # 관외 입력창
-        f2 = ttk.Frame(frame_input)
-        f2.pack(fill="x", pady=5)
-        ttk.Label(f2, text="② 관외 투표자 (초):", width=20, font=("맑은 고딕", 10, "bold")).pack(side="left")
-        entry_extra_time = ttk.Entry(f2, justify="center", font=("맑은 고딕", 10))
-        entry_extra_time.insert(0, "60") # 기본값 (수정 가능)
-        entry_extra_time.pack(side="right", expand=True, fill="x")
+        def create_input(parent, label, default_val):
+            f = ttk.Frame(parent)
+            f.pack(fill="x", pady=5)
+            ttk.Label(f, text=label, width=12, font=("맑은 고딕", 9)).pack(side="left")
+            entry = ttk.Entry(f, justify="right", width=10)
+            entry.insert(0, str(default_val))
+            entry.pack(side="right")
+            return entry
 
-        ttk.Label(frame_input, text="※ 입력한 시간을 기준으로 필요 기표대 수를 자동 계산합니다.", 
-                  foreground="blue", font=("맑은 고딕", 8)).pack(pady=(5,0))
-        
-        # =================================================================
+        entry_booth_intra = create_input(frame_booth, "① 관내 시간:", 40)
+        entry_booth_extra = create_input(frame_booth, "② 관외 시간:", 60)
 
-        # 결과 리스트 (표)
-        frame_result = ttk.Frame(pop)
-        frame_result.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # === 2. 롤 용지 설정 영역 ===
+        frame_roll = ttk.LabelFrame(pop, text=" [용지] 1롤당 발급 가능 인원 (명) ", padding="15")
+        frame_roll.pack(fill="x", padx=15, pady=5)
 
-        cols = ("station", "intra_need", "extra_need", "peak_info")
-        tree = ttk.Treeview(frame_result, columns=cols, show="headings")
-        
-        tree.heading("station", text="투표소명")
-        tree.heading("intra_need", text="관내(개)")
-        tree.heading("extra_need", text="관외(개)")
-        tree.heading("peak_info", text="피크타임 평균(명)")
-        
-        tree.column("station", width=140)
-        tree.column("intra_need", width=70, anchor="center")
-        tree.column("extra_need", width=70, anchor="center")
-        tree.column("peak_info", width=120, anchor="center")
-        
-        sb = ttk.Scrollbar(frame_result, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=sb.set)
-        
-        tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        entry_roll_intra = create_input(frame_roll, "① 관내 기준:", 535)
+        entry_roll_extra = create_input(frame_roll, "② 관외 기준:", 535)
 
-        # 계산 로직 수정본
-        # [수정된 계산 로직] 누적 데이터를 '시간당 순수 투표자 수'로 변환하여 피크타임 계산
-        def _calculate():
-            # 1. 표 비우기
-            for item in tree.get_children():
-                tree.delete(item)
-
+        # === 3. 실행 로직 (엑셀 저장) ===
+        def _run_calculation():
             try:
-                t_intra = int(entry_intra_time.get())
-                t_extra = int(entry_extra_time.get())
-                if t_intra <= 0 or t_extra <= 0: raise ValueError
+                # 입력값 파싱
+                b_time_i = int(entry_booth_intra.get())
+                b_time_e = int(entry_booth_extra.get())
+                r_cap_i = int(entry_roll_intra.get())
+                r_cap_e = int(entry_roll_extra.get())
+                
+                if any(v <= 0 for v in [b_time_i, b_time_e, r_cap_i, r_cap_e]):
+                    raise ValueError
             except:
-                messagebox.showerror("오류", "시간은 0보다 큰 숫자로 입력해주세요.")
+                messagebox.showerror("오류", "모든 설정값은 0보다 큰 정수여야 합니다.", parent=pop)
                 return
 
             self._ensure_data_loaded()
             
-            # (1) 데이터 구조화: temp_data[투표소명][시간] = {intra, extra}
+            # --- 데이터 준비 (기존 로직 통합) ---
+            # temp_data[st_name][(day, time)] = {'intra': val, 'extra': val}
             temp_data = {}
-            all_times = set()
+            all_keys = set()
 
             for file in self.vote_files:
                 if file not in self.cached_data: continue
                 df, day, time = self.cached_data[file]
                 if time is None: continue
                 
-                # 누적 데이터 계산을 위해 '시간' 정보만 수집 (날짜 구분 없이 시간대별 추이 파악)
-                # 만약 1일차/2일차를 구분해야 한다면 (day, time) 키 사용 필요
-                # 여기서는 '가장 바쁜 시간대'를 찾는 것이므로 날짜별로 각각 계산해서 후보군에 넣습니다.
+                time_key = (day, time)
+                all_keys.add(time_key)
                 
                 for _, row in df.iterrows():
                     st_name = str(row['사전투표소명']).strip()
@@ -1259,84 +1240,126 @@ class ElectionAnalyzerApp:
 
                     if st_name not in temp_data: temp_data[st_name] = {}
                     
-                    # 키를 (day, time)으로 설정하여 1일차 7시, 2일차 7시를 구분
-                    time_key = (day, time)
-                    all_times.add(time_key)
-                    
-                    if time_key not in temp_data[st_name]:
-                        temp_data[st_name][time_key] = {'intra': 0, 'extra': 0}
-
-                    # 증가율 반영
+                    # 증감률 반영
                     d = self.station_data[st_name]
                     factor_i = (1 + d.get('elect_rate',0)/100.0) * (1 + d['rate_intra']/100.0)
                     factor_e = (1 + d['rate_extra']/100.0)
 
                     try:
-                        # 파일이 여러 개일 경우 += 가 위험할 수 있으나, (day, time) 키가 유니크하다면 = 로 덮어쓰거나 
-                        # 분할 파일인 경우 += 가 맞음. 여기서는 안전하게 += 사용 (보통 시간대별 파일은 1개씩이므로)
-                        temp_data[st_name][time_key]['intra'] += float(row['관내사전투표자수']) * factor_i
-                        temp_data[st_name][time_key]['extra'] += float(row['관외사전투표자수']) * factor_e
+                        val_i = float(row['관내사전투표자수']) * factor_i
+                        val_e = float(row['관외사전투표자수']) * factor_e
+                        temp_data[st_name][time_key] = {'intra': val_i, 'extra': val_e}
                     except: pass
 
-            # (2) 시간순 정렬 및 '구간별 순증가분(Delta)' 계산
-            sorted_keys = sorted(list(all_times)) # [(1,6), (1,7), ... (2,6), (2,7)...]
+            # --- 결과 계산 ---
+            result_rows = []
             
-            import math
+            sorted_keys = sorted(list(all_keys))
+            from collections import defaultdict
+            day_groups = defaultdict(list)
+            for d, t in sorted_keys:
+                day_groups[d].append((d, t))
             
-            for st_name, time_map in temp_data.items():
-                hourly_deltas_intra = []
-                hourly_deltas_extra = []
+            # 메인 리스트 순서대로 출력하기 위함
+            main_order = []
+            for item_id in self.tree.get_children():
+                val = self.tree.item(item_id)['values']
+                if val: main_order.append(str(val[0]))
+            
+            target_stations = [st for st in main_order if st in temp_data]
+            
+            for st in target_stations:
+                time_map = temp_data[st]
                 
-                # 1일차, 2일차 각각 독립적으로 누적 계산 (날짜 바뀌면 prev 초기화)
-                # 날짜별로 그룹화하여 처리
-                from collections import defaultdict
-                day_groups = defaultdict(list)
-                for d, t in sorted_keys:
-                    day_groups[d].append((d, t))
+                # 1. 롤 용지용 누적값 계산 (총 투표자수)
+                total_i_count = 0
+                total_e_count = 0
+                
+                # 2. 기표대용 피크타임 계산 (시간당 변동분)
+                deltas_i = []
+                deltas_e = []
                 
                 for day in day_groups:
                     prev_i = 0
                     prev_e = 0
-                    times_in_day = sorted(day_groups[day]) # 해당 일자의 시간들 정렬
-                    
-                    for key in times_in_day:
+                    for key in sorted(day_groups[day]):
                         if key not in time_map: continue
-                        
                         curr_i = time_map[key]['intra']
                         curr_e = time_map[key]['extra']
                         
-                        delta_i = max(0, curr_i - prev_i)
-                        delta_e = max(0, curr_e - prev_e)
+                        d_i = max(0, curr_i - prev_i)
+                        d_e = max(0, curr_e - prev_e)
                         
-                        hourly_deltas_intra.append(delta_i)
-                        hourly_deltas_extra.append(delta_e)
+                        deltas_i.append(d_i)
+                        deltas_e.append(d_e)
+                        
+                        total_i_count += d_i
+                        total_e_count += d_e
                         
                         prev_i = curr_i
                         prev_e = curr_e
+                
+                # 기표대 필요량 산출 (피크타임 Top3 평균)
+                import math
+                peak_i = sum(sorted(deltas_i, reverse=True)[:3]) / 3 if deltas_i else 0
+                peak_e = sum(sorted(deltas_e, reverse=True)[:3]) / 3 if deltas_e else 0
+                
+                req_booth_i = max(2, math.ceil((peak_i * b_time_i) / 3600))
+                req_booth_e = max(2, math.ceil((peak_e * b_time_e) / 3600))
+                
+                # 롤 용지 필요량 산출
+                req_roll_i = max(1, math.ceil(total_i_count / r_cap_i))
+                req_roll_e = max(1, math.ceil(total_e_count / r_cap_e))
+                
+                result_rows.append({
+                    '사전투표소명': st,
+                    '관내_예상투표자(명)': int(total_i_count),
+                    '관내_기표대(개)': req_booth_i,
+                    '관내_롤용지(롤)': req_roll_i,
+                    '관외_예상투표자(명)': int(total_e_count),
+                    '관외_기표대(개)': req_booth_e,
+                    '관외_롤용지(롤)': req_roll_e
+                })
+            
+            # --- 엑셀 저장 ---
+            if not result_rows:
+                messagebox.showerror("오류", "계산할 데이터가 없습니다.", parent=pop)
+                return
 
-                # (3) 피크타임(Top 3) 평균 계산
-                # 순수 시간당 투표자 수(delta) 중 가장 높았던 3개를 뽑음
-                vals_i = sorted(hourly_deltas_intra, reverse=True)[:3]
-                vals_e = sorted(hourly_deltas_extra, reverse=True)[:3]
+            try:
+                df_res = pd.DataFrame(result_rows)
                 
-                avg_i = sum(vals_i) / len(vals_i) if vals_i else 0
-                avg_e = sum(vals_e) / len(vals_e) if vals_e else 0
+                # 저장 경로 생성
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+                if getattr(sys, 'frozen', False):
+                    base_path = os.path.dirname(os.path.abspath(sys.executable))
+                else:
+                    base_path = os.path.dirname(os.path.abspath(__file__))
+                    
+                filename = f"물품소요량산출_{timestamp}.xlsx"
+                save_path = os.path.join(base_path, filename)
                 
-                # (4) 필요 기표대 수 산출
-                # 공식: (피크타임 시간당 인원 * 1인당 소요초) / 3600초 = 필요 개수
-                req_intra = math.ceil((avg_i * t_intra) / 3600)
-                req_extra = math.ceil((avg_e * t_extra) / 3600)
+                with pd.ExcelWriter(save_path, engine='openpyxl') as writer:
+                    df_res.to_excel(writer, sheet_name='소요량산출', index=False)
+                    
+                    # 스타일링 (열 너비 조절 등)
+                    ws = writer.sheets['소요량산출']
+                    for col in ws.columns:
+                        col_letter = col[0].column_letter
+                        ws.column_dimensions[col_letter].width = 15
                 
-                # 최소 1개 보장
-                req_intra = max(1, req_intra)
-                req_extra = max(1, req_extra)
-
-                info = f"내:{int(avg_i)} / 외:{int(avg_e)}"
-                tree.insert("", "end", values=(st_name, req_intra, req_extra, info))
+                # 완료 메시지 및 파일 열기
+                pop.destroy()
+                if messagebox.askyesno("완료", f"파일이 생성되었습니다.\n\n{filename}\n\n지금 파일을 여시겠습니까?"):
+                     if platform.system() == 'Windows':
+                        os.startfile(save_path)
+                        
+            except Exception as e:
+                messagebox.showerror("저장 오류", f"파일 저장 중 오류가 발생했습니다.\n{e}", parent=pop)
 
         # 실행 버튼
-        btn_run = ttk.Button(pop, text="▼ 입력한 시간으로 계산하기 ▼", command=_calculate)
-        btn_run.pack(fill="x", padx=10, pady=10) 
+        btn_run = ttk.Button(pop, text="💾 계산 결과 엑셀로 저장", command=_run_calculation)
+        btn_run.pack(fill="x", padx=15, pady=20, ipady=5)
 
     def run_auto_balance(self, total_assets, total_reserve):
         self._ensure_data_loaded()
