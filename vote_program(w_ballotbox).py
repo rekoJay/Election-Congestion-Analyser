@@ -262,14 +262,20 @@ class ElectionAnalyzerApp:
             self.log("두 선거인수 파일 준비됨. 변동률 계산 시작...")
             self.scan_stations()
 
+    # [수정된 코드] 스레드 안전(Thread-Safe) 로그 함수
     def log(self, msg):
-        # 콘솔에는 출력 (개발자 확인용)
+        # 1. 콘솔 출력은 스레드와 상관없으므로 즉시 실행
         print(f"[Log] {msg}")
         
-        # 화면 하단 상태바에 메시지 표시
+        # 2. UI 업데이트는 메인 스레드(root)가 처리하도록 큐(after)에 등록
+        # 0ms 후에 _update_status_ui 함수를 실행하라는 명령
+        self.root.after(0, self._update_status_ui, msg)
+
+    # [추가된 코드] 실제 UI를 변경하는 내부 함수 (메인 스레드에서만 실행됨)
+    def _update_status_ui(self, msg):
         if hasattr(self, 'lbl_status'):
             self.lbl_status.config(text=f" 📢 {msg}")
-            self.root.update_idletasks() # 즉시 갱신
+            # update_idletasks()는 제거 (after가 이벤트 루프를 타므로 불필요)
 
     def on_slider_change(self, val):
         rate = int(float(val))
@@ -1365,7 +1371,8 @@ class ElectionAnalyzerApp:
 
             # --- 엑셀 저장 ---
             try:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+                # [수정] 파일명 충돌 방지를 위해 초(%S) 단위까지 추가
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 if getattr(sys, 'frozen', False):
                     base_path = os.path.dirname(os.path.abspath(sys.executable))
                 else:
