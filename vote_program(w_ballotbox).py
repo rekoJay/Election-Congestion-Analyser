@@ -22,7 +22,6 @@ class ElectionAnalyzerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("사전투표운용장비 배분 최적화 시스템")
-        # [수정] 가로로 넓고 세로는 적당한 크기로 변경 (한눈에 보기 위함)
         self.root.geometry("1100x700") 
         self.root.resizable(True, True) 
         
@@ -156,7 +155,7 @@ class ElectionAnalyzerApp:
         frame_rate = ttk.Frame(frame_sim)
         frame_rate.pack(fill="x", pady=(0, 10))
         
-        ttk.Label(frame_rate, text="📉 사전투표자 증감율 적용: ").pack(side="left")
+        ttk.Label(frame_rate, text="📉 사전투표자 증감률 적용: ").pack(side="left")
         
         self.var_rate = tk.DoubleVar(value=0.0)
         # 중요: 여기서 생성된 self.lbl_rate가 화면에 표시되고, on_slider_change에서 제어됩니다.
@@ -292,7 +291,12 @@ class ElectionAnalyzerApp:
         self.lbl_rate.config(text=text, foreground=color)
         
         for item_id in self.tree.get_children():
-            st_name = self.tree.item(item_id)['values'][0]
+            # [수정 전] 화면에 보이는 값(values[0])을 가져옴 -> '사전투표소'가 빠져있어서 매칭 실패
+            # st_name = self.tree.item(item_id)['values'][0] 
+            
+            # [수정 후] 트리뷰의 고유 ID(item_id)를 사용 -> 여기에 풀네임('...사전투표소')이 들어있음
+            st_name = item_id 
+            
             if st_name in self.station_data:
                 # [수정] 데이터 업데이트 (관내/관외 각각 저장)
                 self.station_data[st_name]['rate_intra'] = rate
@@ -310,9 +314,12 @@ class ElectionAnalyzerApp:
 
                 # [수정] 통합 텍스트 적용
                 rate_txt = self._get_merged_rate_text(rate, rate)
+                
+                # [추가] 화면 표시용 이름(짧은 이름) 다시 생성
+                st_disp = st_name.replace("사전투표소", "")
 
-                # 컬럼 5개 반영
-                self.tree.item(item_id, values=(st_name, elect_disp, disp_intra, disp_extra, rate_txt))
+                # 컬럼 5개 반영 (st_disp 사용)
+                self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
 
     def select_vote_files(self):
         files = filedialog.askopenfilenames(title="투표 데이터 선택", filetypes=[("Excel/CSV Files", "*.xlsx *.xls *.csv")])
@@ -600,29 +607,28 @@ class ElectionAnalyzerApp:
             
             if not item_id: return
             
-            # 2. 안전하게 투표소명 가져오기
-            # (IID가 아니라 실제 표에 적힌 첫 번째 값을 기준으로 함)
+            # [수정 1] item_values는 '선거인수(elect_disp)'를 가져오기 위해 꼭 필요하므로 주석 해제
             item_values = self.tree.item(item_id)['values']
             if not item_values: return
-            st_name = str(item_values[0])
             
+            # [수정 2] 이름은 '화면에 보이는 값(values[0])'이 아닌 '고유 ID(item_id, 풀네임)' 사용
+            st_name = item_id 
+            
+            # 안전장치
             if st_name not in self.station_data:
-                # 혹시나 해서 IID로 한 번 더 시도
-                if item_id in self.station_data: st_name = item_id
-                else: return
+                return
 
-            # 3. 데이터 가져오기 (여기서 'rate'를 찾던 코드를 삭제하고 분리된 변수를 가져옵니다)
+            # 3. 데이터 가져오기
             data = self.station_data[st_name]
             curr_intra = data['intra']
             curr_extra = data['extra']
             org_intra = data['org_intra']
             org_extra = data['org_extra']
             
-            # [수정] 'rate' 키는 이제 없으므로 rate_intra, rate_extra를 가져옴
             val_rate_intra = data['rate_intra']
             val_rate_extra = data['rate_extra']
             
-            elect_disp = item_values[1] # 선거인수 표기는 그대로 유지
+            elect_disp = item_values[1] # 선거인수 표기 유지
 
             # 화면 표시용 텍스트 생성 내부함수
             def get_display_text(val, org_val):
@@ -636,8 +642,12 @@ class ElectionAnalyzerApp:
                     self.station_data[st_name]['intra'] = new_intra
                     disp_intra = get_display_text(new_intra, org_intra)
                     disp_extra = get_display_text(curr_extra, org_extra)
-                    st_disp = st_name.replace("사전투표소", "") # [추가]
-                    self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, val_rate_intra, val_rate_extra))
+                    st_disp = st_name.replace("사전투표소", "")
+                    
+                    # [수정 3] 텍스트 형식으로 변환하여 5번째 컬럼에 적용
+                    rate_txt = self._get_merged_rate_text(val_rate_intra, val_rate_extra)
+                    self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
+                    
                     self.log(f"{st_name} 관내 장비 변경: {new_intra}대")
                     
             elif column == '#4': # 관외 장비
@@ -647,18 +657,21 @@ class ElectionAnalyzerApp:
                     self.station_data[st_name]['extra'] = new_extra
                     disp_intra = get_display_text(curr_intra, org_intra)
                     disp_extra = get_display_text(new_extra, org_extra)
-                    st_disp = st_name.replace("사전투표소", "") # [추가]
-                    self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, val_rate_intra, val_rate_extra))
+                    st_disp = st_name.replace("사전투표소", "")
+                    
+                    # [수정 3] 텍스트 형식으로 변환하여 5번째 컬럼에 적용
+                    rate_txt = self._get_merged_rate_text(val_rate_intra, val_rate_extra)
+                    self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
+                    
                     self.log(f"{st_name} 관외 장비 변경: {new_extra}대")
                     
-            elif column == '#5': # 조정률(통합) 수정 -> 팝업 호출
+            elif column == '#5': # 조정률(통합) 수정
                 self._open_rate_input_dialog(st_name, item_id, elect_disp, curr_intra, curr_extra, org_intra, org_extra)
             
             else:
                 messagebox.showinfo("알림", "수정 가능한 항목(장비 수, 조정률)을 더블 클릭해주세요.", parent=self.root)
 
         except Exception as e:
-            # 에러 발생 시 로그에 남김
             print(f"더블 클릭 오류: {e}")
             import traceback
             traceback.print_exc()
@@ -1405,7 +1418,8 @@ class ElectionAnalyzerApp:
                 for r in rows_booth:
                     ws1.append(r)
                 
-                footer_text = f"*({b_time_i}초)는 선거인 1인의 투표 소요시간(발급시간 제외)을 말함."
+                footer_text = "*()는 선거인 1인의 투표 소요시간(발급시간 제외)을 말함."
+
                 last_row1 = ws1.max_row + 1
                 ws1.cell(row=last_row1, column=1).value = footer_text
                 ws1.merge_cells(start_row=last_row1, start_column=1, end_row=last_row1, end_column=6)
