@@ -34,7 +34,14 @@ class ElectionAnalyzerApp:
         self.region_name = "" 
 
         self.last_reserve_count = 5
-        self.station_data = {} 
+        self.station_data = {}
+
+        # [추가] 시뮬레이션용 집계 변수
+        self.total_past_voters = 0     # 과거 사전투표자 총합 (A)
+        self.total_past_intra = 0      # [신규] 과거 관내 총합
+        self.total_past_extra = 0      # [신규] 과거 관외 총합
+        self.total_recent_electors = 0 # 이번 선거인수 총합 (C)
+        self.past_turnout_rate = 0.0   # 과거 사전투표율 (기준) 
         
         self.create_widgets()
 
@@ -151,19 +158,8 @@ class ElectionAnalyzerApp:
         frame_sim = ttk.LabelFrame(right_panel, text=" 2. 사전투표소별 설정 및 현황 ", padding="10")
         frame_sim.pack(fill="both", expand=True)
         
-        # 슬라이더 영역 (완벽 복구)
-        frame_rate = ttk.Frame(frame_sim)
-        frame_rate.pack(fill="x", pady=(0, 10))
-        
-        ttk.Label(frame_rate, text="📉 사전투표자 증감률 적용: ").pack(side="left")
-        
-        self.var_rate = tk.DoubleVar(value=0.0)
-        # 중요: 여기서 생성된 self.lbl_rate가 화면에 표시되고, on_slider_change에서 제어됩니다.
-        self.lbl_rate = ttk.Label(frame_rate, text="0% (변동 없음)", foreground="blue", font=("맑은 고딕", 10, "bold"))
-        
-        scale = ttk.Scale(frame_rate, from_=-30, to=30, variable=self.var_rate, command=self.on_slider_change)
-        scale.pack(side="left", fill="x", expand=True, padx=15)
-        self.lbl_rate.pack(side="left")
+        # [신규] 사전투표율 시뮬레이션 대시보드
+        self.create_dashboard_ui(frame_sim)
 
         # 팁 문구
         lbl_tip = ttk.Label(frame_sim, text="💡 목록을 더블 클릭하여 장비 수나 조정률을 개별 수정할 수 있습니다.", 
@@ -275,48 +271,6 @@ class ElectionAnalyzerApp:
         if hasattr(self, 'lbl_status'):
             self.lbl_status.config(text=f" 📢 {msg}")
             # update_idletasks()는 제거 (after가 이벤트 루프를 타므로 불필요)
-
-    def on_slider_change(self, val):
-        rate = int(float(val))
-        text = f"{rate}% "
-        if rate > 0:
-            text += "(증가)"
-            color = "red"
-        elif rate < 0:
-            text += "(감소)"
-            color = "blue"
-        else:
-            text += "(동일)"
-            color = "black"
-        self.lbl_rate.config(text=text, foreground=color)
-        
-        for item_id in self.tree.get_children():           
-            # [수정 후] 트리뷰의 고유 ID(item_id)를 사용 -> 여기에 풀네임('...사전투표소')이 들어있음
-            st_name = item_id 
-            
-            if st_name in self.station_data:
-                # [수정] 데이터 업데이트 (관내/관외 각각 저장)
-                self.station_data[st_name]['rate_intra'] = rate
-                self.station_data[st_name]['rate_extra'] = rate
-                
-                # 화면 갱신용 데이터 준비
-                elect_disp = self.tree.item(item_id)['values'][1] # 선거인수 컬럼 유지
-                curr_intra = self.station_data[st_name]['intra']
-                curr_extra = self.station_data[st_name]['extra']
-                org_intra = self.station_data[st_name]['org_intra']
-                org_extra = self.station_data[st_name]['org_extra']
-                
-                disp_intra = f"{org_intra} → {curr_intra}" if curr_intra != org_intra else str(curr_intra)
-                disp_extra = f"{org_extra} → {curr_extra}" if curr_extra != org_extra else str(curr_extra)
-
-                # [수정] 통합 텍스트 적용
-                rate_txt = self._get_merged_rate_text(rate, rate)
-                
-                # [추가] 화면 표시용 이름(짧은 이름) 다시 생성
-                st_disp = st_name.replace("사전투표소", "")
-
-                # 컬럼 5개 반영 (st_disp 사용)
-                self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
 
     def select_vote_files(self):
         files = filedialog.askopenfilenames(title="투표 데이터 선택", filetypes=[("Excel/CSV Files", "*.xlsx *.xls *.csv")])
@@ -526,7 +480,66 @@ class ElectionAnalyzerApp:
                             electorate_diffs[dong_name] = diff_val
                             
                             count_matched += 1
+                # [추가] 전체 선거인수 및 투표율 집계 로직
+                self.total_recent_electors = sum(recent_map.values()) # 이번 선거인수 총합
+                past_total_elect = sum(past_map.values())             # 과거 선거인수 총합
                 
+                # 과거 투표자 수 집계 (캐시된 데이터 활용) 부분 찾아서 아래 코드로 교체
+                
+                temp_voter_sum = 0
+                temp_intra_sum = 0 # [신규]
+                temp_extra_sum = 0 # [신규]
+                
+                if self.vote_files:
+                    try:
+                        all_dfs = []
+                        for file in self.vote_files:
+                            if file in self.cached_data:
+                                df_t, d_t, t_t = self.cached_data[file]
+                                temp = df_t.copy()
+                                temp['Day'] = d_t
+                                all_dfs.append(temp)
+                        
+                        if all_dfs:
+                            full_df = pd.concat(all_dfs)
+                            # (투표소, 일차)별 최대값(누적)을 찾아서 합산
+                            grp = full_df.groupby(['사전투표소명', 'Day'])[['관내사전투표자수', '관외사전투표자수']].max()
+                            
+                            # [수정] 관내/관외 전체 합계
+                            self.total_past_intra = grp['관내사전투표자수'].sum()
+                            self.total_past_extra = grp['관외사전투표자수'].sum()
+                            temp_voter_sum = self.total_past_intra + self.total_past_extra
+                            
+                            # [신규] 개별 투표소 과거 데이터 저장 (역산용)
+                            station_past_data = {}
+                            grp_flat = grp.groupby('사전투표소명')[['관내사전투표자수', '관외사전투표자수']].sum()
+                            
+                            for st_name, row in grp_flat.iterrows():
+                                station_past_data[st_name] = {
+                                    'past_intra': row['관내사전투표자수'],
+                                    'past_extra': row['관외사전투표자수']
+                                }
+                            
+                            # [수정] 관내/관외 각각 합계 구하기
+                            temp_intra_sum = grp['관내사전투표자수'].sum()
+                            temp_extra_sum = grp['관외사전투표자수'].sum()
+                            temp_voter_sum = temp_intra_sum + temp_extra_sum
+                            
+                    except Exception as e:
+                        print(f"투표자 집계 오류: {e}")
+
+                self.total_past_voters = temp_voter_sum
+                self.total_past_intra = temp_intra_sum # [신규] 저장
+                self.total_past_extra = temp_extra_sum # [신규] 저장
+                
+                if past_total_elect > 0:
+                    self.past_turnout_rate = (self.total_past_voters / past_total_elect) * 100
+                else:
+                    self.past_turnout_rate = 0.0
+                    
+                # [추가] 대시보드 UI 초기값 갱신
+                self._update_dashboard_info()
+
                 self.log(f"변동률 계산 완료: {count_matched}개 동 매칭됨")
                 
             except Exception as e:
@@ -574,13 +587,24 @@ class ElectionAnalyzerApp:
                         else: elect_display = "-" 
                         break
             
+            # [신규] 과거 투표자 수 매칭 (없으면 0)
+            p_intra = 0
+            p_extra = 0
+            if 'station_past_data' in locals() and st in station_past_data:
+                p_intra = station_past_data[st]['past_intra']
+                p_extra = station_past_data[st]['past_extra']
+
             # 데이터 저장
             self.station_data[st] = {
                 'intra': intra, 'extra': extra, 
                 'rate_intra': current_global_rate,
                 'rate_extra': current_global_rate,
                 'elect_rate': elect_rate,
-                'org_intra': intra, 'org_extra': extra
+                'org_intra': intra, 'org_extra': extra,
+                
+                # [추가됨] 개별 역산을 위한 과거 데이터
+                'past_intra': p_intra, 
+                'past_extra': p_extra
             }
             
             rate_txt = self._get_merged_rate_text(current_global_rate, current_global_rate)
@@ -1764,13 +1788,15 @@ class ElectionAnalyzerApp:
                 
                 # 화면 갱신
                 rate_txt = self._get_merged_rate_text(new_r_intra, new_r_extra)
-                
-                # 장비대수 표시 텍스트 생성 (변경여부 확인)
                 disp_intra = f"{org_intra} → {curr_intra}" if curr_intra != org_intra else str(curr_intra)
                 disp_extra = f"{org_extra} → {curr_extra}" if curr_extra != org_extra else str(curr_extra)
 
-                st_disp = st_name.replace("사전투표소", "") # [추가]
+                st_disp = st_name.replace("사전투표소", "")
                 self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
+                
+                # [핵심 추가] 전체 통계 재계산 (Bottom-Up 방식)
+                self.recalculate_grand_total()
+                
                 self.log(f"{st_name} 조정률 변경: 내 {new_r_intra}% / 외 {new_r_extra}%")
                 pop.destroy()
             except ValueError:
@@ -1991,9 +2017,215 @@ class ElectionAnalyzerApp:
             
         return fig
 
+# ... (위쪽 _plot_page 함수 내용은 기존 유지) ...
+            
+        return fig
+
+    # [수정] 아래 함수들이 class ElectionAnalyzerApp 안에 포함되도록 들여쓰기를 맞췄습니다.
+    def create_dashboard_ui(self, parent):
+        # 대시보드 컨테이너
+        pnl = ttk.LabelFrame(parent, text=" 📊 사전투표율 시뮬레이션 ", padding="10")
+        pnl.pack(fill="x", pady=(0, 10))
+
+        # 1. 상단 정보 (과거 사전투표율 표시)
+        f_info = ttk.Frame(pnl)
+        f_info.pack(fill="x", pady=(0, 5))
+        
+        # [수정] 용어 변경: 투표율 -> 사전투표율
+        self.lbl_past_info = ttk.Label(f_info, text="지난 선거 사전투표율: - %", font=("맑은 고딕", 9))
+        self.lbl_past_info.pack(side="left")
+
+        # 2. 컨트롤러 (입력창 + 슬라이더)
+        f_ctrl = ttk.Frame(pnl)
+        f_ctrl.pack(fill="x", pady=5)
+
+        # [수정] 용어 변경: 목표 투표율 -> 예상 사전투표율
+        ttk.Label(f_ctrl, text="예상 사전투표율:", font=("맑은 고딕", 10, "bold")).pack(side="left")
+        
+        # 투표율 입력창 (엔터 키로 작동)
+        self.entry_turnout = ttk.Entry(f_ctrl, width=8, justify="right", font=("맑은 고딕", 10, "bold"))
+        self.entry_turnout.pack(side="left", padx=5)
+        self.entry_turnout.bind("<Return>", self._on_entry_turnout) # [핵심] 엔터 누르면 슬라이더 이동
+        ttk.Label(f_ctrl, text="%").pack(side="left")
+
+        # 증감률 슬라이더
+        self.var_rate = tk.DoubleVar(value=0.0)
+        self.scale_rate = ttk.Scale(f_ctrl, from_=-50, to=50, variable=self.var_rate, command=self.on_slider_drag)
+        self.scale_rate.pack(side="right", fill="x", expand=True, padx=(15, 0))
+
+        # 3. 하단 피드백 (예상 증감분)
+        f_res = ttk.Frame(pnl)
+        f_res.pack(fill="x", pady=(5, 0))
+        
+        self.lbl_sim_result = ttk.Label(f_res, text="예상 투표자: - 명 (변동 없음)", foreground="blue", font=("맑은 고딕", 9))
+        self.lbl_sim_result.pack(side="right")
+        self.lbl_rate_display = ttk.Label(f_res, text="증감률: 0%", foreground="gray", font=("맑은 고딕", 8))
+        self.lbl_rate_display.pack(side="left")
+
+    def _update_dashboard_info(self):
+        # 파일 로드 직후 기본 정보 표시
+        if self.past_turnout_rate > 0:
+            # [수정] 여기도 "지난 선거 사전투표율"로 변경
+            self.lbl_past_info.config(text=f"지난 선거 사전투표율: {self.past_turnout_rate:.2f}% (총 {self.total_past_voters:,}명)")
+            
+            if self.total_recent_electors > 0:
+                # 현재 상태(증감률 0%)의 예상 사전투표율 계산해서 입력창에 넣기
+                current_expect_rate = (self.total_past_voters / self.total_recent_electors) * 100
+                self.entry_turnout.delete(0, tk.END)
+                self.entry_turnout.insert(0, f"{current_expect_rate:.2f}")
+                self.on_slider_drag(0)
+
+    def on_slider_drag(self, val):
+        # [기능 1] 슬라이더 조작 -> 투표율 계산 -> UI 업데이트
+        try:
+            rate = float(val)
+        except:
+            rate = 0.0
+            
+        # 1. 증감률 텍스트 갱신
+        txt_rate = f"{int(rate)}%"
+        if rate > 0: txt_rate = f"+{int(rate)}%"
+        self.lbl_rate_display.config(text=f"설정 증감률: {txt_rate}")
+
+        # 2. 예상 투표율 및 인원 역산
+        if self.total_past_voters > 0 and self.total_recent_electors > 0:
+            # 비율 적용 (1 + R/100)
+            factor = (1 + rate / 100.0)
+            
+            # [수정] 관내/관외 각각 예측치 계산
+            expected_voters = self.total_past_voters * factor
+            exp_intra = self.total_past_intra * factor
+            exp_extra = self.total_past_extra * factor
+            
+            # 예상 투표율
+            expected_turnout = (expected_voters / self.total_recent_electors) * 100
+            
+            # 입력창 업데이트
+            if self.root.focus_get() != self.entry_turnout:
+                self.entry_turnout.delete(0, tk.END)
+                self.entry_turnout.insert(0, f"{expected_turnout:.2f}")
+            
+            # 결과 텍스트 (관내/관외 구분 추가)
+            diff = int(expected_voters - self.total_past_voters)
+            sign = "+" if diff > 0 else ""
+            
+            # 포맷팅: 예상: 60,000명 (+100) [관내: 40,000 / 관외: 20,000]
+            result_text = (f"예상: {int(expected_voters):,}명 ({sign}{diff:,})\n"
+                           f"[관내: {int(exp_intra):,} / 관외: {int(exp_extra):,}]")
+                           
+            self.lbl_sim_result.config(text=result_text, foreground="blue" if diff >=0 else "red")
+        
+        # 3. 트리뷰 리스트 업데이트
+        self.update_treeview_by_rate(rate)
+
+    def _on_entry_turnout(self, event):
+        # [기능] 예상 사전투표율 입력 -> 증감률 역산 -> 슬라이더 자동 이동
+        try:
+            target_turnout = float(self.entry_turnout.get())
+            
+            if self.total_past_voters > 0 and self.total_recent_electors > 0:
+                # 1. 입력한 사전투표율을 맞추기 위한 '목표 투표자 수' 계산
+                target_voters = self.total_recent_electors * (target_turnout / 100.0)
+                
+                # 2. 그 목표 인원이 되려면 지난번보다 몇 % 늘어야(줄어야) 하는지 역산
+                # 공식: ( (목표인원 - 과거인원) / 과거인원 ) * 100
+                required_rate = ((target_voters - self.total_past_voters) / self.total_past_voters) * 100
+                
+                # 3. 슬라이더 범위(-50 ~ 50)를 넘어가면 최대치로 고정
+                if required_rate > 50: required_rate = 50
+                if required_rate < -50: required_rate = -50
+                
+                # 4. [핵심] 슬라이더를 계산된 위치로 강제 이동시킴
+                self.var_rate.set(required_rate)
+                
+                # 5. 이동된 값으로 전체 데이터 갱신 (슬라이더 드래그한 것과 같은 효과)
+                self.on_slider_drag(required_rate)
+                
+                # 입력창에서 포커스 빼기 (입력 완료 느낌)
+                self.lbl_sim_result.focus()
+            else:
+                messagebox.showwarning("데이터 부족", "선거인수 및 투표 데이터 파일이 먼저 로드되어야 계산할 수 있습니다.")
+        except ValueError:
+            # 숫자가 아닌 것을 입력했을 때 무시
+            pass
+
+    # [대체 함수] 기존 on_slider_change를 대체
+    def update_treeview_by_rate(self, val):
+        rate = int(float(val))
+        
+        for item_id in self.tree.get_children():
+            st_name = item_id 
+            if st_name in self.station_data:
+                self.station_data[st_name]['rate_intra'] = rate
+                self.station_data[st_name]['rate_extra'] = rate
+                
+                # 화면 갱신용 데이터 준비
+                elect_disp = self.tree.item(item_id)['values'][1]
+                curr_intra = self.station_data[st_name]['intra']
+                curr_extra = self.station_data[st_name]['extra']
+                org_intra = self.station_data[st_name]['org_intra']
+                org_extra = self.station_data[st_name]['org_extra']
+                
+                disp_intra = f"{org_intra} → {curr_intra}" if curr_intra != org_intra else str(curr_intra)
+                disp_extra = f"{org_extra} → {curr_extra}" if curr_extra != org_extra else str(curr_extra)
+
+                rate_txt = self._get_merged_rate_text(rate, rate)
+                st_disp = st_name.replace("사전투표소", "")
+
+                self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
+
+    def recalculate_grand_total(self):
+        # [기능] 개별 투표소의 설정을 집계하여 전체 통계(상단 UI) 역업데이트
+        
+        total_exp_voters = 0
+        total_exp_intra = 0
+        total_exp_extra = 0
+        
+        # 1. 모든 투표소 순회하며 예상 인원 합산
+        for st_name, data in self.station_data.items():
+            p_intra = data.get('past_intra', 0)
+            p_extra = data.get('past_extra', 0)
+            r_intra = data.get('rate_intra', 0)
+            r_extra = data.get('rate_extra', 0)
+            
+            # 예상 인원 = 과거 * (1 + 증감률/100)
+            exp_i = p_intra * (1 + r_intra / 100.0)
+            exp_e = p_extra * (1 + r_extra / 100.0)
+            
+            total_exp_voters += (exp_i + exp_e)
+            total_exp_intra += exp_i
+            total_exp_extra += exp_e
+            
+        # 2. UI 업데이트
+        if self.total_past_voters > 0 and self.total_recent_electors > 0:
+            # (1) 예상 사전투표율 역산
+            new_turnout = (total_exp_voters / self.total_recent_electors) * 100
+            
+            # (2) 입력창 업데이트 (삭제 후 재입력)
+            self.entry_turnout.delete(0, tk.END)
+            self.entry_turnout.insert(0, f"{new_turnout:.2f}")
+            
+            # (3) 결과 텍스트 업데이트
+            diff = int(total_exp_voters - self.total_past_voters)
+            sign = "+" if diff > 0 else ""
+            
+            result_text = (f"예상: {int(total_exp_voters):,}명 ({sign}{diff:,})\n"
+                           f"[관내: {int(total_exp_intra):,} / 관외: {int(total_exp_extra):,}]")
+            
+            self.lbl_sim_result.config(text=result_text, foreground="blue" if diff >=0 else "red")
+
+            # (4) 슬라이더 위치 업데이트 (평균 증감률로 표시)
+            avg_rate = ((total_exp_voters - self.total_past_voters) / self.total_past_voters) * 100
+            
+            # 슬라이더 값을 바꾸되, 이벤트를 트리거하지 않도록 주의 (값만 변경)
+            self.var_rate.set(avg_rate)
+            
+            # 슬라이더 옆 텍스트 갱신
+            txt_rate = f"{int(avg_rate)}%"
+            if avg_rate > 0: txt_rate = f"+{int(avg_rate)}%"
+            self.lbl_rate_display.config(text=f"평균 증감률: {txt_rate}")
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = ElectionAnalyzerApp(root)
     root.mainloop()
-
-
