@@ -290,10 +290,7 @@ class ElectionAnalyzerApp:
             color = "black"
         self.lbl_rate.config(text=text, foreground=color)
         
-        for item_id in self.tree.get_children():
-            # [수정 전] 화면에 보이는 값(values[0])을 가져옴 -> '사전투표소'가 빠져있어서 매칭 실패
-            # st_name = self.tree.item(item_id)['values'][0] 
-            
+        for item_id in self.tree.get_children():           
             # [수정 후] 트리뷰의 고유 ID(item_id)를 사용 -> 여기에 풀네임('...사전투표소')이 들어있음
             st_name = item_id 
             
@@ -1224,16 +1221,12 @@ class ElectionAnalyzerApp:
         frame_roll = ttk.LabelFrame(pop, text=" [용지] 1롤당 발급 가능 인원 (명) ", padding="15")
         frame_roll.pack(fill="x", padx=15, pady=5)
 
-        # [수정] 요청하신 기본값 반영 (535, 500)
-        entry_roll_intra = create_input(frame_roll, "① 관내 기준:", 535)
-        entry_roll_extra = create_input(frame_roll, "② 관외 기준:", 500)
+        # [수정] 기본값 공란 처리
+        entry_roll_intra = create_input(frame_roll, "① 관내 기준:", "")
+        entry_roll_extra = create_input(frame_roll, "② 관외 기준:", "")
 
         # === 3. 실행 로직 ===
         def _run_calculation():
-            from openpyxl.styles import Border, Side, Alignment, Font, PatternFill
-            from openpyxl.utils import get_column_letter
-            import math
-
             try:
                 b_time_i = int(entry_booth_intra.get())
                 b_time_e = int(entry_booth_extra.get())
@@ -1349,9 +1342,13 @@ class ElectionAnalyzerApp:
                 pure_roll_i = max(1, math.ceil(avg_voter_i / r_cap_i)) * equip_i
                 pure_roll_e = max(1, math.ceil(avg_voter_e / r_cap_e)) * equip_e
                 
-                reserve = 2 if (equip_i + equip_e) >= 10 else 1 
-                
+                # [수정] 1. 관내+관외 소요량 합계를 먼저 구함
                 sub_total = pure_roll_i + pure_roll_e
+                
+                # [수정] 2. 합계의 10%를 예비용으로 산정 (소수점 발생 시 올림 처리하여 넉넉하게)
+                reserve = math.ceil(sub_total * 0.1)
+                
+                # 3. 최종 합계
                 total_sum = sub_total + reserve
 
                 rows_roll.append([
