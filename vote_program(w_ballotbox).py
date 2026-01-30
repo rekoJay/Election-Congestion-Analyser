@@ -46,12 +46,18 @@ class ElectionAnalyzerApp:
         
         self.create_widgets()
 
-    # [수정] 통합 조정률 텍스트 생성 헬퍼 (기존 유지)
     def _get_merged_rate_text(self, r_intra, r_extra):
         def _fmt(val):
-            if val > 0: return f"+ {val}%"        
-            elif val < 0: return f"- {abs(val)}%" 
+            # 혹시 모를 문자열 입력 대비
+            try:
+                val = float(val)
+            except:
+                return str(val)
+
+            if val > 0: return f"+ {val:.1f}%"   # .1f 추가 (소수점 1자리)
+            elif val < 0: return f"- {abs(val):.1f}%" # .1f 추가
             else: return "-"
+            
         if r_intra == r_extra:
             return _fmt(r_intra)
         else:
@@ -142,6 +148,27 @@ class ElectionAnalyzerApp:
         btn_balance = ttk.Button(frame_exec, text="⚖️ 운용장비 자동 배분 실행", command=self.open_balance_popup)
         btn_balance.pack(fill="x", ipady=6, pady=(0, 5))
 
+        # === [변경] 분석 모드 선택 (라디오 버튼) ===
+        f_mode = ttk.Frame(frame_exec)
+        f_mode.pack(fill="x", pady=(5, 2))
+        
+        # 값을 제어할 변수 생성 (기본값: density)
+        self.var_mode = tk.StringVar(value="density")
+        
+        # 스타일링을 위한 프레임
+        ttk.Label(f_mode, text="분석 기준:", font=("맑은 고딕", 9, "bold")).pack(anchor="w")
+        
+        f_radio = ttk.Frame(f_mode)
+        f_radio.pack(fill="x", pady=(2, 0))
+        
+        # 옵션 1: 발급능력 (명칭 변경)
+        r1 = ttk.Radiobutton(f_radio, text="발급자수(장비1대기준)", variable=self.var_mode, value="density")
+        r1.pack(side="left", expand=True, anchor="w")
+        
+        # 옵션 2: 투표자수 (명칭 변경)
+        r2 = ttk.Radiobutton(f_radio, text="사전투표자 수", variable=self.var_mode, value="population")
+        r2.pack(side="left", expand=True, anchor="w")
+
         # [수정] 텍스트 변경: '분석' 단어 추가, 결과물의 가치 강조
         btn_run = ttk.Button(frame_exec, text="🚀 분석 리포트 출력", command=self.run_simulation)
         btn_run.pack(fill="x", ipady=6, pady=(5, 0))
@@ -187,7 +214,7 @@ class ElectionAnalyzerApp:
         self.tree.heading("elect_diff", text="선거인수 변동")
         self.tree.heading("intra", text="관내장비")
         self.tree.heading("extra", text="관외장비")
-        self.tree.heading("rate_merged", text="증감률(관내/외)") 
+        self.tree.heading("rate_merged", text="증가율(관내/외)") 
         
         self.tree.column("station", width=120)
         self.tree.column("elect_diff", width=100, anchor="center")
@@ -230,9 +257,21 @@ class ElectionAnalyzerApp:
         for item in self.tree.get_children():
             self.tree.delete(item)
             
-        # 5. 슬라이더 초기화
-        self.var_rate.set(0.0)
-        self.on_slider_drag(0.0) # [수정됨] 올바른 함수명 호출
+        # [추가] 시뮬레이션 관련 집계 변수 초기화
+        self.total_past_voters = 0
+        self.total_past_intra = 0
+        self.total_past_extra = 0
+        self.total_recent_electors = 0
+        self.total_past_electors = 0
+        self.past_turnout_rate = 0.0
+
+        # [추가] 대시보드 UI(라벨 및 입력창) 텍스트 초기화
+        self.lbl_past_info.config(text="직전 사전투표율: - % (총 -명 / 관내 -명 / 관외 -명)")
+        self.entry_predict_rate.delete(0, tk.END)
+        self.lbl_predict_details.config(text="% (총 -명 / 관내 -명 / 관외 -명)")
+
+        # 5. 슬라이더 및 증감률 입력창 초기화
+        self.reset_rate_zero()
 
         # 6. 로그 남기기
         self.log("=== 모든 데이터가 초기화되었습니다 ===")
@@ -334,7 +373,9 @@ class ElectionAnalyzerApp:
         self._ensure_data_loaded() # [최적화] 데이터 로드 보장
 
         station_list = []  
-        seen = set()       
+        seen = set()
+
+        station_past_data = {}       
         
         # 캐시된 데이터에서 투표소 추출
         for file in self.vote_files:
@@ -541,20 +582,75 @@ class ElectionAnalyzerApp:
                 else:
                     self.past_turnout_rate = 0.0
                     
-                # [추가] 대시보드 UI 초기값 갱신
-                self._update_dashboard_info()
 
                 self.log(f"변동률 계산 완료: {count_matched}개 동 매칭됨")
                 
             except Exception as e:
                 self.log(f"선거인수 파일 처리 오류: {e}")
 
+        # =================================================================
+        # [수정] 지역 불일치 감지 및 자동 초기화 (인구 + 장비 모두 포함)
+        # =================================================================
+        # 감지 조건: 인구 데이터가 있거나, 장비 지역명(region_name)이 있을 때 검사
+        check_needed = False
+        is_mismatch = False
+        
+        # 1. 인구 데이터와 비교
+        if electorate_rates and station_list:
+            check_needed = True
+            is_pop_match = False
+            for st in station_list:
+                st_clean = st.replace(" ", "")
+                for dong in electorate_rates.keys():
+                    if dong in st_clean:
+                        is_pop_match = True
+                        break
+                if is_pop_match: break
+            if not is_pop_match: is_mismatch = True
+
+        # 2. 장비 데이터(지역명)와 비교 (장비 파일에 지역명이 감지된 경우)
+        if not is_mismatch and self.region_name and station_list:
+            check_needed = True
+            is_equip_match = False
+            for st in station_list:
+                # 투표소 이름에 장비파일 지역명(예: "유성구")이 포함되는지 체크는 어려우므로
+                # 보통 동 이름 매칭 실패 시 함께 처리되지만, 안전을 위해 로직은 남겨둠
+                pass 
+            # (장비 파일만으로는 동 이름을 알 수 없으므로, 위 인구 데이터 불일치 시 함께 날리는 방식으로 처리)
+
+        # 결론: 불일치 발생 시 초기화 수행
+        if check_needed and is_mismatch:
+            messagebox.showwarning("지역 데이터 불일치", 
+                "새로 로드한 [투표 데이터]가 기존 [인구/장비 데이터]와 지역이 다릅니다.\n\n"
+                "오류 방지를 위해 기존에 등록된\n"
+                "1. 운용장비 현황 파일\n"
+                "2. 인구수 통보 파일\n"
+                "을 모두 자동으로 해제합니다.\n\n"
+                "해당 지역에 맞는 파일들을 다시 업로드해주세요.")
+            
+            # --- [1] 인구 데이터 초기화 ---
+            self.file_past_elect = None
+            self.file_recent_elect = None
+            electorate_rates = {} 
+            electorate_diffs = {}
+            self._update_elect_status() # UI 갱신 (X 표시)
+            
+            # --- [2] 장비 데이터 초기화 (추가된 부분) ---
+            self.equipment_file = None
+            self.region_name = ""
+            # UI 갱신 (파일 미선택 상태로 복구)
+            self.lbl_equip_status.config(text="파일 미선택 (기본값: 1대 적용)", foreground="gray")
+            
+            self.log("지역 불일치로 [인구] 및 [장비] 데이터 자동 초기화됨")
+        # ================================================================= 
+
         for item in self.tree.get_children():
             self.tree.delete(item)
         
         sorted_stations = station_list
         self.station_data = {} 
-        current_global_rate = int(self.var_rate.get())
+        # [수정] 소수점 1자리까지 정확히 가져오도록 변경
+        current_global_rate = round(float(self.var_rate.get()), 1)
 
         # [수정] enumerate를 사용하여 인덱스(i)를 함께 가져옴
         for i, st in enumerate(sorted_stations):
@@ -583,12 +679,19 @@ class ElectionAnalyzerApp:
                 st_clean = st.replace(" ", "")
                 for dong_name, e_rate in electorate_rates.items():
                     if dong_name in st_clean:
-                        elect_rate = e_rate
-                        diff = electorate_diffs.get(dong_name, 0)
-                        
-                        if diff > 0: elect_display = f"+ {diff:,}" 
-                        elif diff < 0: elect_display = f"- {abs(diff):,}"
-                        else: elect_display = "-" 
+                        # [수정] 제2, 제3... 등 '제2' 이상의 투표소는 인구 변동 미적용 (본소에만 적용)
+                        # 정규식: '제' 뒤에 2~9 숫자가 오고 뒤이어 '사전'이 붙는 패턴 찾기 (예: 제2사전, 제3사전)
+                        if re.search(r'제[2-9]사전', st_clean):
+                            elect_rate = 0
+                            elect_display = "-" # 표기도 제외
+                        else:
+                            # 제1이거나 숫자가 없는 경우만 적용
+                            elect_rate = e_rate
+                            diff = electorate_diffs.get(dong_name, 0)
+                            
+                            if diff > 0: elect_display = f"+ {diff:,}" 
+                            elif diff < 0: elect_display = f"- {abs(diff):,}"
+                            else: elect_display = "-" 
                         break
             
             # [신규] 과거 투표자 수 매칭 (없으면 0)
@@ -618,7 +721,7 @@ class ElectionAnalyzerApp:
             # [변경] 화면 표시용 이름 생성 ('사전투표소' 제거)
             st_disp = st.replace("사전투표소", "")
             self.tree.insert("", "end", iid=st, values=(st_disp, elect_display, intra, extra, rate_txt), tags=(row_tag,))
-            
+        self._update_dashboard_info()    
         self.log(f"목록 갱신 완료: 총 {len(sorted_stations)}개 투표소")
 
     def on_tree_double_click(self, event):
@@ -869,9 +972,25 @@ class ElectionAnalyzerApp:
             # [핵심 수정] 2. '전체(평균)' 데이터 생성 로직을 여기로 이동!
             # =========================================================================
             try:
-                numeric_cols = ['관내_혼잡도', '관외_혼잡도', '관내장비수', '원본_관내장비수', '관외장비수', '원본_관외장비수']
-                # short_name 기준으로 그룹화
-                df_mean = final_df.groupby(['사전투표소명', '시간대', 'short_name'], observed=True)[numeric_cols].mean().reset_index()
+                # [수정] 모드에 따라 '전체' 데이터 집계 방식 분기 (투표자수=합계, 혼잡도=평균)
+                grp = final_df.groupby(['사전투표소명', '시간대', 'short_name'], observed=True)
+                mode_val = self.var_mode.get()
+                
+                # 집계할 컬럼들 구분
+                cols_mean = ['관내_혼잡도', '관외_혼잡도', '관내장비수', '원본_관내장비수', '관외장비수', '원본_관외장비수']
+                cols_sum = ['시간대별_관내투표자수', '시간대별_관외투표자수']
+                
+                if mode_val == "population":
+                    # 투표자수 모드: 투표자수는 합계(sum), 나머지는 평균(mean)
+                    agg_dict = {c: 'mean' for c in cols_mean}
+                    agg_dict.update({c: 'sum' for c in cols_sum})
+                    # agg 함수로 컬럼별 다른 연산 적용
+                    df_mean = grp.agg(agg_dict).reset_index()
+                else:
+                    # 혼잡도 모드: 모두 평균(mean) (기존 방식)
+                    all_cols = cols_mean + cols_sum
+                    df_mean = grp[all_cols].mean().reset_index()
+                    
                 df_mean['일차'] = '전체'
                 # 원본 final_df에 합치기
                 final_df = pd.concat([final_df, df_mean], ignore_index=True)
@@ -922,15 +1041,30 @@ class ElectionAnalyzerApp:
 
         df['label_clean'] = df['short_name'] 
         
+        # === [수정] 사용자가 선택한 모드 확인 ===
+        # 라디오 버튼 변수값 확인
+        mode_val = self.var_mode.get()
+        
+        if mode_val == "population":
+            target_col_intra = '시간대별_관내투표자수'
+            target_col_extra = '시간대별_관외투표자수'
+            color_map = 'Oranges' # 주황색
+            title_suffix = "(사전투표자 수)" # <--- 변경
+        else:
+            # 기본값: density
+            target_col_intra = '관내_혼잡도'
+            target_col_extra = '관외_혼잡도'
+            color_map = 'Greens'  # 녹색 (기본)
+            title_suffix = "(장비 1대당 발급자수)" # <--- 변경
 
-        # 4. 시나리오 설정 (체크박스 값 반영)
+        # 4. 시나리오 설정 (체크박스 값 반영 + 동적 컬럼)
         all_scenarios = [
-            (1, '관내', 'label_clean', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
-            (1, '관외', 'label_clean', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
-            (2, '관내', 'label_clean', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
-            (2, '관외', 'label_clean', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get()),
-            ('전체', '관내', 'label_clean', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day_all.get() and self.var_intra.get()),
-            ('전체', '관외', 'label_clean', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day_all.get() and self.var_extra.get())
+            (1, '관내', 'label_clean', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
+            (1, '관외', 'label_clean', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
+            (2, '관내', 'label_clean', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
+            (2, '관외', 'label_clean', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get()),
+            ('전체', '관내', 'label_clean', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day_all.get() and self.var_intra.get()),
+            ('전체', '관외', 'label_clean', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day_all.get() and self.var_extra.get())
         ]
         
         # 활성화된 시나리오만 필터링
@@ -939,19 +1073,38 @@ class ElectionAnalyzerApp:
 
         unique_stations = df['사전투표소명'].unique()
         
-        # [핵심] 여기서 새로 만드신 _plot_page 함수를 호출합니다!
-        # save_name을 filename이라는 이름으로 넘겨줍니다.
-        return self._plot_page(df, active_scenarios, unique_stations, filename=save_name, is_pdf=False)
+        # [수정] _plot_page에 색상(cmap)과 제목접미사(title_suffix) 전달
+        return self._plot_page(df, active_scenarios, unique_stations, filename=save_name, is_pdf=False, cmap=color_map, title_suffix=title_suffix)
 
     def save_visual_excel(self, df, filename):
-        # 1. 시나리오 정의 (visualize_results와 동일 로직)
+        # === [추가] 모드 확인 및 설정 ===
+        mode_val = self.var_mode.get()
+        
+        # [수정] 모드에 따라 엑셀 헤더 및 색상 설정
+        if mode_val == "population":
+            target_col_intra = '시간대별_관내투표자수'
+            target_col_extra = '시간대별_관외투표자수'
+            # 주황색 계열 (Excel Color Scale)
+            start_c, mid_c, end_c = 'FFF5EB', 'FDAE6B', 'E6550D' 
+            # 엑셀에 표시할 합계/평균 라벨 동적 설정
+            total_label = '전체합계'
+            row_stat_label = '시간대합계'
+        else:
+            target_col_intra = '관내_혼잡도'
+            target_col_extra = '관외_혼잡도'
+            # 녹색 계열 (기존)
+            start_c, mid_c, end_c = 'F7FCF5', '74C476', '006D2C'
+            total_label = '전체평균'
+            row_stat_label = '시간대평균'
+
+        # 1. 시나리오 정의 (동적 변수 적용)
         scenarios = [
-            ('1일차_관내', 1, '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
-            ('1일차_관외', 1, '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
-            ('2일차_관내', 2, '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
-            ('2일차_관외', 2, '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get()),
-            ('전체_관내', '전체', '관내', '관내_혼잡도', '관내장비수', '원본_관내장비수', self.var_day_all.get() and self.var_intra.get()),
-            ('전체_관외', '전체', '관외', '관외_혼잡도', '관외장비수', '원본_관외장비수', self.var_day_all.get() and self.var_extra.get())
+            ('1일차_관내', 1, '관내', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day1.get() and self.var_intra.get()),
+            ('1일차_관외', 1, '관외', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day1.get() and self.var_extra.get()),
+            ('2일차_관내', 2, '관내', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day2.get() and self.var_intra.get()),
+            ('2일차_관외', 2, '관외', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day2.get() and self.var_extra.get()),
+            ('전체_관내', '전체', '관내', target_col_intra, '관내장비수', '원본_관내장비수', self.var_day_all.get() and self.var_intra.get()),
+            ('전체_관외', '전체', '관외', target_col_extra, '관외장비수', '원본_관외장비수', self.var_day_all.get() and self.var_extra.get())
         ]
 
         # 2. 엑셀 작성 시작
@@ -967,47 +1120,59 @@ class ElectionAnalyzerApp:
                 
                 if df_day.empty: continue
 
-                # 피벗 테이블 생성 (이미지 생성 로직과 동일)
+                # 피벗 테이블 생성
                 pivot = df_day.pivot_table(index=['short_name'], columns='시간대', values=value_col)
                 
-                # 평균 행/열 계산
-                pivot['전체평균'] = pivot.mean(axis=1)
-                avg_row = pivot.mean(axis=0)
-                pivot.loc['시간대평균'] = avg_row
+                # [수정] 모드에 따라 엑셀 통계(행/열) 방식 변경
+                if mode_val == "population":
+                    # 투표자수 모드: 가로/세로 모두 합계(Sum)
+                    pivot[total_label] = pivot.sum(axis=1) 
+                    avg_row = pivot.sum(axis=0)       
+                else:
+                    # 혼잡도 모드: 가로/세로 모두 평균(Mean)
+                    pivot[total_label] = pivot.mean(axis=1)
+                    avg_row = pivot.mean(axis=0)
                 
-                # 컬럼 순서 정리: [전체평균]을 맨 앞으로
-                time_cols = sorted([c for c in pivot.columns if c != '전체평균'])
-                new_cols = ['전체평균'] + time_cols
+                pivot.loc[row_stat_label] = avg_row
+                
+                # 컬럼 순서 정리: [전체합계/평균]을 맨 앞으로
+                time_cols = sorted([c for c in pivot.columns if c != total_label])
+                new_cols = [total_label] + time_cols
                 pivot = pivot[new_cols]
 
                 original_order = list(dict.fromkeys(df_day['short_name']))
                 
-                # pivot 테이블에 실제로 존재하는 투표소만 필터링 (안전장치)
+                # pivot 테이블에 실제로 존재하는 투표소만 필터링
                 station_rows = [name for name in original_order if name in pivot.index]
                 
-                new_rows = ['시간대평균'] + station_rows
+                new_rows = [row_stat_label] + station_rows
                 pivot = pivot.reindex(new_rows)
 
                 # 장비 정보 가져오기
                 equip_data = df_day.drop_duplicates(subset=['short_name']).set_index('short_name')[[eq_col, org_eq_col]]
                 
                 # 엑셀용 데이터프레임 구성 (장비 컬럼 추가)
-                # 최종 컬럼: [투표소명(Index), 장비수, 전체평균, 7, 8, ... 18]
                 final_sheet_df = pivot.copy()
-                final_sheet_df.insert(0, '장비수', "") # 장비수 컬럼을 맨 앞에 추가
+                final_sheet_df.insert(0, '장비수', "") 
 
                 for idx in final_sheet_df.index:
-                    if idx == '시간대평균':
-                        # 시간대평균 행의 장비수는 11-18시 집중평균 값 등으로 대체하거나 비워둠
-                        # 이미지처럼 11~18시 집중평균 계산하여 전체평균 셀에 병기
-                        target_hours = [c for c in pivot.columns if isinstance(c, (int, float)) and 11 <= c <= 18]
-                        if target_hours:
-                            mean_val = pivot.loc[idx, '전체평균']
-                            focus_mean = pivot.loc[idx, target_hours].mean()
-                            final_sheet_df.loc[idx, '전체평균'] = f"{mean_val:.1f}\n({focus_mean:.1f})"
+                    if idx == row_stat_label:
+                        # [수정] 투표자수 모드일 때는 괄호(평균) 표시 제거
+                        if mode_val == "population":
+                            # 합계만 표시 (천단위 콤마는 엑셀 서식으로 처리되거나 여기서 문자열로 박아도 됨)
+                            val = pivot.loc[idx, total_label]
+                            final_sheet_df.loc[idx, total_label] = val # 숫자로 남겨둠 (나중에 서식 적용)
                         else:
-                            final_sheet_df.loc[idx, '전체평균'] = f"{pivot.loc[idx, '전체평균']:.1f}"
-                        final_sheet_df.loc[idx, '장비수'] = "평균"
+                            # 혼잡도 모드는 기존처럼 (집중평균) 표시
+                            target_hours = [c for c in pivot.columns if isinstance(c, (int, float)) and 11 <= c <= 18]
+                            if target_hours:
+                                mean_val = pivot.loc[idx, total_label]
+                                focus_mean = pivot.loc[idx, target_hours].mean()
+                                final_sheet_df.loc[idx, total_label] = f"{mean_val:.1f}\n({focus_mean:.1f})"
+                            else:
+                                final_sheet_df.loc[idx, total_label] = f"{pivot.loc[idx, total_label]:.1f}"
+                                
+                        final_sheet_df.loc[idx, '장비수'] = "합계" if mode_val == "population" else "평균"
                     else:
                         # 장비수 텍스트 생성
                         try:
@@ -1024,14 +1189,12 @@ class ElectionAnalyzerApp:
                 # --- 스타일링 (openpyxl) ---
                 ws = writer.sheets[sheet_name]
                 
-                # 1. 기본 폰트 및 정렬
                 font_basic = Font(name='맑은 고딕', size=10)
                 align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 border_thin = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
                 border_thick_blue = Border(left=Side(style='medium', color='0000FF'), right=Side(style='medium', color='0000FF'), 
                                            top=Side(style='medium', color='0000FF'), bottom=Side(style='medium', color='0000FF'))
 
-                # 전체 셀 순회하며 기본 스타일 적용
                 max_row = ws.max_row
                 max_col = ws.max_column
                 
@@ -1040,6 +1203,9 @@ class ElectionAnalyzerApp:
                         cell.font = font_basic
                         cell.alignment = align_center
                         cell.border = border_thin
+                        # [추가] 투표자수 모드일 때 숫자 셀에 천단위 콤마 서식 적용
+                        if mode_val == "population" and isinstance(cell.value, (int, float)):
+                            cell.number_format = '#,##0'
 
                 # 2. 헤더 스타일 (1행)
                 for cell in ws[1]:
@@ -1048,53 +1214,47 @@ class ElectionAnalyzerApp:
 
                 # 3. 인덱스 열 스타일 (A열: 투표소명, B열: 장비수)
                 for row in range(2, max_row + 1):
-                    ws.cell(row=row, column=1).font = Font(name='맑은 고딕', size=10, bold=True) # 투표소명
-                    ws.cell(row=row, column=2).font = Font(name='맑은 고딕', size=9) # 장비수
+                    ws.cell(row=row, column=1).font = Font(name='맑은 고딕', size=10, bold=True) 
+                    ws.cell(row=row, column=2).font = Font(name='맑은 고딕', size=9) 
 
-                # 4. 조건부 서식 (히트맵 효과) - C열(전체평균)부터 끝까지, 3행(데이터 시작)부터 끝까지
-                # 데이터 영역 정의 (시간대별 수치)
-                # 열 인덱스 3은 '전체평균'이므로, 실제 시간대 데이터는 4부터 시작
-                # 하지만 이미지상 '전체평균'도 색상이 칠해지므로 3부터 시작
+                # 4. 조건부 서식 (히트맵)
+                rule = ColorScaleRule(start_type='min', start_color=start_c,
+                                      mid_type='percentile', mid_value=50, mid_color=mid_c,
+                                      end_type='max', end_color=end_c)
                 
-                # 색조 규칙: 초록색 계열 (Green Scale)
-                rule = ColorScaleRule(start_type='min', start_color='F7FCF5',
-                                      mid_type='percentile', mid_value=50, mid_color='74C476',
-                                      end_type='max', end_color='006D2C')
-                
-                # 데이터 영역 (숫자가 있는 부분만)
-                # 시간대평균(2행)을 제외하고 3행부터 적용
                 range_string = f"{get_column_letter(3)}3:{get_column_letter(max_col)}{max_row}"
                 ws.conditional_formatting.add(range_string, rule)
 
-                # 5. 파란색 테두리 강조 (전체평균 열 & 시간대평균 행)
-                # 시간대평균 행 (2행)
+                # 5. 파란색 테두리 강조
+                # 시간대 합계/평균 행 (2행)
                 for col in range(1, max_col + 1):
                     ws.cell(row=2, column=col).border = Border(top=Side(style='medium', color='0000FF'), 
                                                                bottom=Side(style='medium', color='0000FF'),
                                                                left=Side(style='thin'), right=Side(style='thin'))
                     ws.cell(row=2, column=col).font = Font(name='맑은 고딕', bold=True)
-                    # 수치 포맷
+                    
                     if col >= 3:
-                        ws.cell(row=2, column=col).number_format = '0.0'
+                        # [수정] 모드에 따라 2행(통계행)의 숫자 서식 다르게
+                        if mode_val == "population":
+                            ws.cell(row=2, column=col).number_format = '#,##0'
+                        else:
+                            ws.cell(row=2, column=col).number_format = '0.0'
 
-                # 전체평균 열 (C열 = 3번째)
+                # 전체 합계/평균 열 (C열)
                 for row in range(1, max_row + 1):
                     cell = ws.cell(row=row, column=3)
                     prev_border = cell.border
-                    # 기존 테두리 유지하며 좌우만 파란색 (상단/하단은 2행과 겹칠 때 처리 주의)
                     cell.border = Border(left=Side(style='medium', color='0000FF'), 
                                          right=Side(style='medium', color='0000FF'),
                                          top=prev_border.top, bottom=prev_border.bottom)
 
-                # 교차지점 (2행 3열: 전체 평균의 평균) - 완전 파란 테두리
                 ws.cell(row=2, column=3).border = border_thick_blue
                 
-                # 6. 컬럼 너비 조정
-                ws.column_dimensions['A'].width = 15 # 투표소명
-                ws.column_dimensions['B'].width = 10 # 장비수
-                ws.column_dimensions['C'].width = 12 # 전체평균
+                ws.column_dimensions['A'].width = 15
+                ws.column_dimensions['B'].width = 10
+                ws.column_dimensions['C'].width = 12
                 for col in range(4, max_col + 1):
-                    ws.column_dimensions[get_column_letter(col)].width = 6 # 시간대
+                    ws.column_dimensions[get_column_letter(col)].width = 6
     
     def _read_equip_summary(self):
         """
@@ -1241,30 +1401,36 @@ class ElectionAnalyzerApp:
             entry.pack(side="right")
             return entry
 
-        # [수정] 요청하신 기본값 반영 (90, 100)
-        entry_booth_intra = create_input(frame_booth, "① 관내 시간:", 90)
-        entry_booth_extra = create_input(frame_booth, "② 관외 시간:", 100)
+        entry_booth_intra = create_input(frame_booth, "① 관내 시간:", "")
+        entry_booth_extra = create_input(frame_booth, "② 관외 시간:", "")
 
         # === 2. 롤 용지 설정 영역 ===
         frame_roll = ttk.LabelFrame(pop, text=" [용지] 1롤당 발급 가능 인원 (명) ", padding="15")
         frame_roll.pack(fill="x", padx=15, pady=5)
 
-        # [수정] 기본값 공란 처리
         entry_roll_intra = create_input(frame_roll, "① 관내 기준:", "")
         entry_roll_extra = create_input(frame_roll, "② 관외 기준:", "")
 
         # === 3. 실행 로직 ===
         def _run_calculation():
-            try:
-                b_time_i = int(entry_booth_intra.get())
-                b_time_e = int(entry_booth_extra.get())
-                r_cap_i = int(entry_roll_intra.get())
-                r_cap_e = int(entry_roll_extra.get())
-                
-                if any(v <= 0 for v in [b_time_i, b_time_e, r_cap_i, r_cap_e]):
-                    raise ValueError
-            except:
-                messagebox.showerror("오류", "모든 설정값은 0보다 큰 정수여야 합니다.", parent=pop)
+            # 1. 입력값 파싱
+            def _get_val(entry):
+                try:
+                    val = int(entry.get())
+                    return val if val > 0 else 0
+                except:
+                    return 0
+
+            b_time_i = _get_val(entry_booth_intra)
+            b_time_e = _get_val(entry_booth_extra)
+            r_cap_i = _get_val(entry_roll_intra)
+            r_cap_e = _get_val(entry_roll_extra)
+            
+            calc_booth = (b_time_i > 0 and b_time_e > 0)
+            calc_roll = (r_cap_i > 0 and r_cap_e > 0)
+            
+            if not calc_booth and not calc_roll:
+                messagebox.showerror("입력 오류", "기표대(시간) 또는 롤 용지(용량) 중\n적어도 하나의 세트는 올바르게 입력해야 합니다.", parent=pop)
                 return
 
             self._ensure_data_loaded()
@@ -1292,10 +1458,18 @@ class ElectionAnalyzerApp:
                     factor_e = (1 + d['rate_extra']/100.0)
 
                     try:
-                        val_i = float(row['관내사전투표자수']) * factor_i
-                        val_e = float(row['관외사전투표자수']) * factor_e
+                        raw_i = row['관내사전투표자수']
+                        raw_e = row['관외사전투표자수']
+                        
+                        if isinstance(raw_i, str): raw_i = float(raw_i.replace(',', ''))
+                        if isinstance(raw_e, str): raw_e = float(raw_e.replace(',', ''))
+                        
+                        val_i = float(raw_i) * factor_i
+                        val_e = float(raw_e) * factor_e
+                        
                         temp_data[st_name][time_key] = {'intra': val_i, 'extra': val_e}
-                    except: pass
+                    except Exception as e: 
+                        pass
 
             # --- 결과 계산 ---
             main_order = []
@@ -1318,10 +1492,12 @@ class ElectionAnalyzerApp:
             rows_roll = []
 
             for st in target_stations:
+                d = self.station_data[st]
+                factor_i = (1 + d.get('elect_rate',0)/100.0) * (1 + d['rate_intra']/100.0)
+                factor_e = (1 + d['rate_extra']/100.0)
+
                 time_map = temp_data[st]
                 
-                total_i_count = 0
-                total_e_count = 0
                 deltas_i = []
                 deltas_e = []
                 
@@ -1338,65 +1514,68 @@ class ElectionAnalyzerApp:
                         deltas_i.append(d_i)
                         deltas_e.append(d_e)
                         
-                        total_i_count += d_i
-                        total_e_count += d_e
-                        
                         prev_i = curr_i
                         prev_e = curr_e
                 
-                peak_i = sum(sorted(deltas_i, reverse=True)[:3]) / 3 if deltas_i else 0
-                peak_e = sum(sorted(deltas_e, reverse=True)[:3]) / 3 if deltas_e else 0
-                
-                req_booth_i = max(2, math.ceil((peak_i * b_time_i) / 3600))
-                req_booth_e = max(2, math.ceil((peak_e * b_time_e) / 3600))
-
                 st_disp = st.replace("사전투표소", "")
-                
-                total_booths = req_booth_i + req_booth_e
 
-                rows_booth.append([
-                    st_disp, 
-                    total_booths,
-                    int(peak_i), req_booth_i,
-                    int(peak_e), req_booth_e
-                ])
+                # [기표대]
+                if calc_booth:
+                    peak_i = sum(sorted(deltas_i, reverse=True)[:3]) / 3 if deltas_i else 0
+                    peak_e = sum(sorted(deltas_e, reverse=True)[:3]) / 3 if deltas_e else 0
+                    
+                    req_booth_i = max(2, math.ceil((peak_i * b_time_i) / 3600))
+                    req_booth_e = max(2, math.ceil((peak_e * b_time_e) / 3600))
+                    total_booths = req_booth_i + req_booth_e
 
-                equip_i = self.station_data[st]['intra']
-                equip_e = self.station_data[st]['extra']
+                    rows_booth.append([
+                        st_disp, 
+                        total_booths,
+                        int(peak_i), req_booth_i,
+                        int(peak_e), req_booth_e
+                    ])
 
-                avg_voter_i = total_i_count / equip_i if equip_i > 0 else 0
-                avg_voter_e = total_e_count / equip_e if equip_e > 0 else 0
+                # [롤 용지]
+                if calc_roll:
+                    equip_i = self.station_data[st]['intra']
+                    equip_e = self.station_data[st]['extra']
+                    
+                    dashboard_val_i = int(self.station_data[st]['past_intra'] * factor_i)
+                    dashboard_val_e = int(self.station_data[st]['past_extra'] * factor_e)
 
-                pure_roll_i = max(1, math.ceil(avg_voter_i / r_cap_i)) * equip_i
-                pure_roll_e = max(1, math.ceil(avg_voter_e / r_cap_e)) * equip_e
-                
-                # [수정] 1. 관내+관외 소요량 합계를 먼저 구함
-                sub_total = pure_roll_i + pure_roll_e
-                
-                # [수정] 2. 합계의 10%를 예비용으로 산정 (소수점 발생 시 올림 처리하여 넉넉하게)
-                reserve = math.ceil(sub_total * 0.1)
-                
-                # 3. 최종 합계
-                total_sum = sub_total + reserve
+                    avg_voter_i = dashboard_val_i / equip_i if equip_i > 0 else 0
+                    avg_voter_e = dashboard_val_e / equip_e if equip_e > 0 else 0
 
-                rows_roll.append([
-                    st_disp,
-                    total_sum,
-                    sub_total,
-                    int(total_i_count), pure_roll_i,
-                    int(total_e_count), pure_roll_e,
-                    reserve
-                ])
+                    pure_roll_i = max(1, math.ceil(avg_voter_i / r_cap_i)) * equip_i
+                    pure_roll_e = max(1, math.ceil(avg_voter_e / r_cap_e)) * equip_e
+                    
+                    sub_total = pure_roll_i + pure_roll_e
+                    reserve = math.ceil(sub_total * 0.1)
+                    total_sum = sub_total + reserve
+
+                    # [수정] 위원회 보관분 컬럼을 위해 빈 값("") 추가
+                    rows_roll.append([
+                        st_disp,
+                        total_sum,
+                        sub_total,
+                        dashboard_val_i, 
+                        pure_roll_i,
+                        dashboard_val_e, 
+                        pure_roll_e,
+                        reserve,
+                        "" # 위원회 보관분 (개별 투표소는 비워둠)
+                    ])
             
             # --- 합계 행 추가 ---
-            if rows_booth:
+            if calc_booth and rows_booth:
                 sum_total_b = sum(r[1] for r in rows_booth)
                 sum_intra_b = sum(r[3] for r in rows_booth)
                 sum_extra_b = sum(r[5] for r in rows_booth)
                 summary_booth = ["합계", sum_total_b, "", sum_intra_b, "", sum_extra_b]
                 rows_booth.insert(0, summary_booth)
 
-            if rows_roll:
+            if calc_roll and rows_roll:
+                # 일반 합계 계산
                 sum_total_r = sum(r[1] for r in rows_roll)
                 sum_sub_r = sum(r[2] for r in rows_roll)
                 sum_vote_i = sum(r[3] for r in rows_roll)
@@ -1404,12 +1583,25 @@ class ElectionAnalyzerApp:
                 sum_vote_e = sum(r[5] for r in rows_roll)
                 sum_roll_e = sum(r[6] for r in rows_roll)
                 sum_res = sum(r[7] for r in rows_roll)
-                summary_roll = ["합계", sum_total_r, sum_sub_r, sum_vote_i, sum_roll_i, sum_vote_e, sum_roll_e, sum_res]
+                
+                # [수정 핵심] 위원회 보관분 계산 (예비용 총합의 20%)
+                commission_keep = math.ceil(sum_res * 0.2)
+                
+                # [수정 핵심] 최종 합계(B열)에도 위원회 보관분을 더해서 전체 물량이 맞도록 함
+                final_grand_total = sum_total_r + commission_keep
+
+                summary_roll = [
+                    "합계", 
+                    final_grand_total, # 총합 (개별합 + 위원회분)
+                    sum_sub_r, 
+                    sum_vote_i, sum_roll_i, sum_vote_e, sum_roll_e, 
+                    sum_res, 
+                    commission_keep # 위원회 보관분
+                ]
                 rows_roll.insert(0, summary_roll)
 
             # --- 엑셀 저장 ---
             try:
-                # [수정] 파일명 충돌 방지를 위해 초(%S) 단위까지 추가
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 if getattr(sys, 'frozen', False):
                     base_path = os.path.dirname(os.path.abspath(sys.executable))
@@ -1420,75 +1612,80 @@ class ElectionAnalyzerApp:
                 save_path = os.path.join(base_path, filename)
                 
                 wb = __import__('openpyxl').Workbook()
+                if 'Sheet' in wb.sheetnames: wb.remove(wb['Sheet'])
+                
+                ws1 = None
+                ws2 = None
                 
                 # ==================== 시트 1: 기표대 ====================
-                ws1 = wb.active
-                ws1.title = "기표대 소요량"
-                
-                ws1['A1'] = "사전투표소명"
-                ws1['B1'] = "합계"
-                ws1['C1'] = f"관내({b_time_i}초)"
-                ws1['E1'] = f"관외({b_time_e}초)"
-                
-                ws1['C2'] = "최다투표자수\n(1시간)"
-                ws1['D2'] = "기표대"
-                ws1['E2'] = "최다투표자수\n(1시간)"
-                ws1['F2'] = "기표대"
+                if calc_booth:
+                    ws1 = wb.create_sheet("기표대 소요량")
+                    ws1['A1'] = "사전투표소명"
+                    ws1['B1'] = "합계"
+                    ws1['C1'] = f"관내({b_time_i}초)"
+                    ws1['E1'] = f"관외({b_time_e}초)"
+                    
+                    ws1['C2'] = "최다투표자수\n(1시간)"
+                    ws1['D2'] = "기표대"
+                    ws1['E2'] = "최다투표자수\n(1시간)"
+                    ws1['F2'] = "기표대"
 
-                ws1.merge_cells('A1:A2')
-                ws1.merge_cells('B1:B2')
-                ws1.merge_cells('C1:D1')
-                ws1.merge_cells('E1:F1')
+                    ws1.merge_cells('A1:A2')
+                    ws1.merge_cells('B1:B2')
+                    ws1.merge_cells('C1:D1')
+                    ws1.merge_cells('E1:F1')
 
-                for r in rows_booth:
-                    ws1.append(r)
-                
-                footer_text = "*()는 선거인 1인의 투표 소요시간(발급시간 제외)을 말함."
-
-                last_row1 = ws1.max_row + 1
-                ws1.cell(row=last_row1, column=1).value = footer_text
-                ws1.merge_cells(start_row=last_row1, start_column=1, end_row=last_row1, end_column=6)
-                ws1.cell(row=last_row1, column=1).alignment = Alignment(horizontal='left')
-                ws1.cell(row=last_row1, column=1).font = Font(size=9, italic=True)
+                    for r in rows_booth:
+                        ws1.append(r)
+                    
+                    last_row1 = ws1.max_row + 1
+                    ws1.cell(row=last_row1, column=1).value = "*()는 선거인 1인의 투표 소요시간(발급시간 제외)을 말함."
+                    ws1.merge_cells(start_row=last_row1, start_column=1, end_row=last_row1, end_column=6)
+                    ws1.cell(row=last_row1, column=1).font = Font(size=9, italic=True)
 
                 # ==================== 시트 2: 롤 용지 ====================
-                ws2 = wb.create_sheet("롤 투표용지 소요량")
-                
-                ws2['A1'] = "사전투표소명"
-                ws2['B1'] = "합계"
-                ws2['C1'] = "소계"
-                ws2['D1'] = f"관내({r_cap_i}명)"
-                ws2['F1'] = f"관외({r_cap_e}명)"
-                ws2['H1'] = "예비용"
+                if calc_roll:
+                    ws2 = wb.create_sheet("롤 투표용지 소요량")
+                    
+                    ws2['A1'] = "사전투표소명"
+                    ws2['B1'] = "합계"
+                    ws2['C1'] = "소계"
+                    ws2['D1'] = f"관내({r_cap_i}명)"
+                    ws2['F1'] = f"관외({r_cap_e}명)"
+                    ws2['H1'] = "예비용"
+                    
+                    # [수정] 위원회 보관분 헤더 추가
+                    ws2['I1'] = "위원회\n보관분"
 
-                ws2['D2'] = "예상투표자수"
-                ws2['E2'] = "롤투표용지"
-                ws2['F2'] = "예상투표자수"
-                ws2['G2'] = "롤투표용지"
+                    ws2['D2'] = "예상투표자수"
+                    ws2['E2'] = "롤투표용지"
+                    ws2['F2'] = "예상투표자수"
+                    ws2['G2'] = "롤투표용지"
 
-                ws2.merge_cells('A1:A2')
-                ws2.merge_cells('B1:B2')
-                ws2.merge_cells('C1:C2')
-                ws2.merge_cells('D1:E1')
-                ws2.merge_cells('F1:G1')
-                ws2.merge_cells('H1:H2')
+                    ws2.merge_cells('A1:A2')
+                    ws2.merge_cells('B1:B2')
+                    ws2.merge_cells('C1:C2')
+                    ws2.merge_cells('D1:E1')
+                    ws2.merge_cells('F1:G1')
+                    ws2.merge_cells('H1:H2')
+                    # [수정] 위원회 보관분 병합
+                    ws2.merge_cells('I1:I2')
 
-                for r in rows_roll:
-                    ws2.append(r)
-                
-                for row in ws2.iter_rows(min_row=3, max_row=ws2.max_row, min_col=2, max_col=8):
-                    for cell in row:
-                        if isinstance(cell.value, (int, float)):
-                            cell.number_format = '#,##0'
+                    for r in rows_roll:
+                        ws2.append(r)
+                    
+                    for row in ws2.iter_rows(min_row=3, max_row=ws2.max_row, min_col=2, max_col=9): # I열까지 포맷
+                        for cell in row:
+                            if isinstance(cell.value, (int, float)):
+                                cell.number_format = '#,##0'
 
-                footer_text_2 = "*()는 1롤 투표용지당 최대 사전투표자 수를 말함."
-                last_row2 = ws2.max_row + 1
-                ws2.cell(row=last_row2, column=1).value = footer_text_2
-                ws2.merge_cells(start_row=last_row2, start_column=1, end_row=last_row2, end_column=8)
-                ws2.cell(row=last_row2, column=1).alignment = Alignment(horizontal='left')
-                ws2.cell(row=last_row2, column=1).font = Font(size=9, italic=True)
+                    last_row2 = ws2.max_row + 1
+                    ws2.cell(row=last_row2, column=1).value = "*()는 1롤 투표용지당 최대 사전투표자 수를 말함."
+                    # [수정] 병합 범위 확장 (8 -> 9)
+                    ws2.merge_cells(start_row=last_row2, start_column=1, end_row=last_row2, end_column=9)
+                    ws2.cell(row=last_row2, column=1).font = Font(size=9, italic=True)
 
-                # ==================== 스타일 적용 (테두리 박멸) ====================
+                # ==================== 스타일 적용 ====================
                 thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
                                      top=Side(style='thin'), bottom=Side(style='thin'))
                 align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -1513,21 +1710,26 @@ class ElectionAnalyzerApp:
                         col_letter = get_column_letter(col)
                         ws.column_dimensions[col_letter].width = 13
 
-                # 1. 데이터 영역까지만 스타일 적용 (주석 제외)
-                style_sheet(ws1, last_row1 - 1)
-                style_sheet(ws2, last_row2 - 1)
-
-                # 2. [강제 제거] 주석 행의 모든 셀 테두리 '투명화'
                 no_side = Side(border_style=None)
                 no_border = Border(left=no_side, right=no_side, top=no_side, bottom=no_side)
 
-                # 시트 1: A~F
-                for col in range(1, 7):
-                    ws1.cell(row=last_row1, column=col).border = no_border
+                if calc_booth and ws1:
+                    style_sheet(ws1, last_row1 - 1)
+                    for col in range(1, 7):
+                        ws1.cell(row=last_row1, column=col).border = no_border
                 
-                # 시트 2: A~H (숨겨진 셀 포함 전체 박멸)
-                for col in range(1, 9):
-                    ws2.cell(row=last_row2, column=col).border = no_border
+                if calc_roll and ws2:
+                    style_sheet(ws2, last_row2 - 1) # 전체 테두리 일단 적용
+
+                    # [추가] I열(9번째, 위원회 보관분)의 빈칸 셀들(4행부터) 테두리 제거
+                    # 1~2행(헤더), 3행(합계 14)은 테두리 유지
+                    # 4행 ~ 데이터 끝(last_row2 - 1)까지는 테두리 제거
+                    for r_idx in range(4, last_row2):
+                        ws2.cell(row=r_idx, column=9).border = no_border
+
+                    # 주석 행(맨 마지막) 테두리 제거
+                    for col in range(1, 10):
+                        ws2.cell(row=last_row2, column=col).border = no_border
 
                 wb.save(save_path)
                 
@@ -1763,28 +1965,30 @@ class ElectionAnalyzerApp:
 
         ttk.Label(pop, text=f"[{st_name}]", font=("맑은 고딕", 10, "bold")).pack(pady=(15, 5))
 
-        # [추가] 안내 문구 라벨
-        guide_msg = "※ 이 설정은 투표율이 아닌\n사전투표자 수의 증감률(%)입니다."
+        # [추가] 안내 문구 라벨 (문구 수정)
+        guide_msg = "※ 이 설정은 투표율이 아닌\n사전투표자 수의 증가율(%)입니다."
         ttk.Label(pop, text=guide_msg, justify="center", foreground="blue", font=("맑은 고딕", 8)).pack(pady=(0, 10))
 
         frame_in = ttk.Frame(pop)
         frame_in.pack(fill="x", padx=30, pady=5)
         ttk.Label(frame_in, text="관내 조정(%):").pack(side="left")
+        # (수정) f-string 포맷팅(.1f) 적용
         entry_intra = ttk.Entry(frame_in, width=10, justify="right")
-        entry_intra.insert(0, str(cur_r_intra))
+        entry_intra.insert(0, f"{cur_r_intra:.1f}")  # <-- 소수점 1자리로 고정하여 표시
         entry_intra.pack(side="right")
 
         frame_out = ttk.Frame(pop)
         frame_out.pack(fill="x", padx=30, pady=5)
         ttk.Label(frame_out, text="관외 조정(%):").pack(side="left")
         entry_extra = ttk.Entry(frame_out, width=10, justify="right")
-        entry_extra.insert(0, str(cur_r_extra))
+        entry_extra.insert(0, f"{cur_r_extra:.1f}")  # <-- 소수점 1자리로 고정하여 표시
         entry_extra.pack(side="right")
 
         def _apply():
             try:
-                new_r_intra = int(entry_intra.get())
-                new_r_extra = int(entry_extra.get())
+                # [수정] 정수(int) 대신 실수(float)로 받아서 소수점 입력 가능하게 변경
+                new_r_intra = float(entry_intra.get())
+                new_r_extra = float(entry_extra.get())
                 
                 # 데이터 업데이트
                 self.station_data[st_name]['rate_intra'] = new_r_intra
@@ -1808,17 +2012,17 @@ class ElectionAnalyzerApp:
 
         ttk.Button(pop, text="적용", command=_apply).pack(pady=15, fill='x', padx=30)
 
-    def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False):
+    # [수정] 인자에 cmap='Greens', title_suffix='' 추가
+    def _plot_page(self, df, scenarios, stations_list, filename=None, is_pdf=False, cmap='Greens', title_suffix=''):
         count = len(scenarios)
         
         # 1. 기본 단위 높이 계산
         if is_pdf:
             unit_h = 13 
         else:
-            # 투표소 개수에 따라 유동적으로 높이 조절
             unit_h = max(7, 4 + (len(stations_list) * 0.6))
 
-        # 2. [수정] 그래프 개수에 따른 행/열 및 전체 크기 자동 계산 (최대 6개 대응)
+        # 2. 행/열 및 전체 크기 자동 계산
         if count == 1: 
             nrows, ncols = 1, 1
             figsize = (12, unit_h)
@@ -1827,25 +2031,35 @@ class ElectionAnalyzerApp:
             figsize = (20, unit_h)
         elif count <= 4: 
             nrows, ncols = 2, 2
-            figsize = (20, unit_h * 2) # 2줄 높이
+            figsize = (20, unit_h * 2) 
         else: 
-            # 5개~6개인 경우 (3행 2열) -> 1,2일차+전체 선택 시 여기 해당
             nrows, ncols = 3, 2
-            figsize = (20, unit_h * 3) # 3줄 높이
+            figsize = (20, unit_h * 3) 
 
         # 3. 서브플롯 생성
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
         
-        # axes 배열을 1차원 리스트로 펴서 인덱싱하기 쉽게 변환
         if count == 1: axes_flat = [axes]
         else: axes_flat = axes.flatten()
 
-        max_val = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
+        # === [핵심 수정 1] 최대값(vmax) 계산 로직 ===
+        # 시간대별 데이터(본문)의 최대값을 구합니다. (합계 제외)
+        global_max = 1
         
+        if '투표자' in title_suffix:
+            temp_max = 0
+            for _, _, _, v_col, _, _, active in scenarios:
+                if active and v_col in df.columns:
+                    current_max = df[v_col].max() 
+                    if current_max > temp_max:
+                        temp_max = current_max
+            global_max = temp_max if temp_max > 0 else 100
+        else:
+            global_max = max(df['관내_혼잡도'].max(), df['관외_혼잡도'].max()) if not df.empty else 1
+
         for idx, (day, type_name, label_col, value_col, eq_col, org_eq_col, _) in enumerate(scenarios):
             ax = axes_flat[idx]
             
-            # [전체]와 [일반 일차] 구분하여 데이터 필터링
             if str(day) == '전체':
                 df_day = df[df['일차'] == '전체']
             else:
@@ -1857,13 +2071,25 @@ class ElectionAnalyzerApp:
             
             pivot = df_day.pivot_table(index=label_col, columns='시간대', values=value_col)
             
-            # 평균 행/열 생성
+            # === [수정] 모드에 따라 첫 번째 열(행 통계) 계산 방식 변경 ===
             avg_label = '' 
-            pivot[avg_label] = pivot.mean(axis=1) 
-            avg_row = pivot.mean(axis=0)
+            
+            if '투표자' in title_suffix:
+                # [투표자수 모드]: 합계(Sum)
+                pivot[avg_label] = pivot.sum(axis=1)
+            else:
+                # [혼잡도 모드]: 평균(Mean)
+                pivot[avg_label] = pivot.mean(axis=1)
+
+            # [수정] 아래쪽(열) 통계도 모드에 따라 '합계' 또는 '평균'으로 변경
+            if '투표자' in title_suffix:
+                avg_row = pivot.sum(axis=0)
+            else:
+                avg_row = pivot.mean(axis=0)
+                
             pivot.loc[avg_label] = avg_row
             
-            # 정렬
+            # 정렬 및 재배치
             time_cols = sorted([c for c in pivot.columns if c != avg_label])
             new_cols = [avg_label] + time_cols
             pivot = pivot[new_cols]
@@ -1873,14 +2099,8 @@ class ElectionAnalyzerApp:
             new_rows = [avg_label] + valid_labels
             pivot = pivot.reindex(new_rows)
 
-            # 장비 데이터 매칭
-            # '전체'일 경우 장비 수는 평균이 아니라 그냥 해당 투표소의 설정값을 따라가야 함 (중복 제거)
-            if str(day) == '전체':
-                # 전체 평균 데이터에는 장비수 컬럼이 평균내져 있을 수 있으므로, 원본 매핑을 다시 참조하거나
-                # 이미 df_mean 생성 시 장비수도 평균냈으므로(같은 값이면 평균도 같음) 그대로 사용
-                equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
-            else:
-                equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
+            # 장비 데이터 준비
+            equip_data = df_day.drop_duplicates(subset=[label_col]).set_index(label_col)[[eq_col, org_eq_col]]
 
             annot_labels = []
             for row_label in new_rows:
@@ -1888,7 +2108,6 @@ class ElectionAnalyzerApp:
                     annot_labels.append("") 
                 else:
                     try:
-                        # 장비대수는 소수점이 나올 수 없으므로 int 처리 (전체 평균인 경우에도 장비수는 동일)
                         curr = int(equip_data.loc[row_label, eq_col])
                         org = int(equip_data.loc[row_label, org_eq_col])
                         if curr != org: txt = f"{org} → {curr}"
@@ -1916,30 +2135,59 @@ class ElectionAnalyzerApp:
             ax_equip.tick_params(axis='y', rotation=0, length=0)
 
             ax_equip.text(0.5, 0.95, "장비수", ha='center', va='bottom', fontsize=10, fontweight='bold', color='black')
-            ax_equip.text(0.95, 0.5, "시간대별 평균 →", ha='right', va='center', fontsize=9, fontweight='bold', color='#3B5BDB')
+            
+            # [수정] 라벨 텍스트
+            col_label_txt = "시간대별 합계 →" if '투표자' in title_suffix else "시간대별 평균 →"
+            ax_equip.text(0.95, 0.5, col_label_txt, ha='right', va='center', fontsize=9, fontweight='bold', color='#3B5BDB')
 
-            # [추가] 1. 주석(Annotation)용 데이터프레임 생성 (문자열 포맷)
-            annot_df = pivot.applymap(lambda x: f"{x:.1f}")
-
-            # [추가] 2. 11시~18시 컬럼 필터링 및 평균 계산
-            # pivot의 컬럼 중 정수형이면서 11 이상 18 이하인 것만 추출
+            # 주석(Annotation) 포맷
             target_hours = [c for c in pivot.columns if isinstance(c, (int, float)) and 11 <= c <= 18]
-            
-            if target_hours:
-                # avg_label('') 행은 '시간대별 전체 평균'을 담고 있음. 여기서 11~18시 데이터만 뽑아서 다시 평균 계산
-                mean_11_18 = pivot.loc[avg_label, target_hours].mean()
-                
-                # [추가] 3. 좌측 상단(전체 평균) 셀 텍스트 수정
-                # 기존 값(전체 평균) 아래에 괄호로 11~18시 평균 추가
-                original_text = annot_df.iloc[0, 0]
-                annot_df.iloc[0, 0] = f"{original_text}\n({mean_11_18:.1f})"
 
-            # [수정] annot에 True 대신 직접 만든 문자열 DF(annot_df) 전달, fmt는 비움('')
-            sns.heatmap(pivot, annot=annot_df, fmt='', cmap='Greens', cbar=False, 
-                        linewidths=0.5, linecolor='white', vmin=0, vmax=max_val, ax=ax)
+            if '투표자' in title_suffix:
+                annot_df = pivot.applymap(lambda x: f"{x:,.0f}")
+            else:
+                annot_df = pivot.applymap(lambda x: f"{x:.1f}")
+                if target_hours:
+                    mean_11_18 = pivot.loc[avg_label, target_hours].mean()
+                    original_text = annot_df.iloc[0, 0]
+                    annot_df.iloc[0, 0] = f"{original_text}\n({mean_11_18:.1f})"
+
+            # === [핵심 수정 2] 색상 정규화 (자기들끼리 비교) ===
+            pivot_color = pivot.copy()
             
-            ax.text(0.5, -0.2, "↓ 투표소별\n평균", ha='center', va='bottom', fontsize=10, fontweight='bold', color='#3B5BDB', clip_on=False)
+            if '투표자' in title_suffix:
+                # [논리] 합계 열/행을 0으로 만드는 대신, 본문의 진하기(global_max)에 맞춰 비율을 조정(Scaling)함
+                
+                # 1. 투표소별 합계 (첫번째 열, Grand Total 제외)
+                # 이 열에서 가장 큰 값을 찾아서, 그 값이 global_max(가장 진한 색)가 되도록 비율 조정
+                col_data = pivot.iloc[1:, 0]
+                if not col_data.empty and col_data.max() > 0:
+                    scaled_col = (col_data / col_data.max()) * global_max
+                    pivot_color.iloc[1:, 0] = scaled_col
+
+                # 2. 시간대별 합계 (첫번째 행, Grand Total 제외)
+                # 이 행에서 가장 큰 값을 찾아서, 그 값이 global_max가 되도록 비율 조정
+                row_data = pivot.iloc[0, 1:]
+                if not row_data.empty and row_data.max() > 0:
+                    scaled_row = (row_data / row_data.max()) * global_max
+                    pivot_color.iloc[0, 1:] = scaled_row
+
+                # 3. 전체 합계 (좌측 상단, Grand Total)
+                # 이 값은 무조건 가장 크므로 가장 진한 색(global_max)으로 고정
+                pivot_color.iloc[0, 0] = global_max
             
+            # [수정] annot(글자)에는 원래 숫자(annot_df)가 들어가고, 색상(data)에는 조정된 값(pivot_color)이 들어감
+            sns.heatmap(pivot_color, annot=annot_df, fmt='', cmap=cmap, cbar=False, 
+                        linewidths=0.5, linecolor='white', vmin=0, vmax=global_max, ax=ax)
+            
+            if '투표자' in title_suffix:
+                row_label_txt = "↓ 투표소별\n합계" 
+            else:
+                row_label_txt = "↓ 투표소별\n평균"
+                
+            ax.text(0.5, -0.2, row_label_txt, ha='center', va='bottom', fontsize=10, fontweight='bold', color='#3B5BDB', clip_on=False)
+            
+            # 테두리 그리기
             rect_row = patches.Rectangle((0, 0), len(pivot.columns), 1, linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
             ax.add_patch(rect_row)
             rect_col = patches.Rectangle((0, 0), 1, len(pivot), linewidth=3, edgecolor='#3B5BDB', facecolor='none', clip_on=False)
@@ -1951,77 +2199,60 @@ class ElectionAnalyzerApp:
             ax.xaxis.set_label_position('top')
             ax.tick_params(axis='x', length=0)
 
-            # [엄격 모드] 데이터 무결성 검사 (순서대로 붙여넣으세요)
             if time_cols:
                 try:
-                    # 1. 시간대 숫자 변환 및 범위 계산
                     times = [int(c) for c in time_cols]
                     start_t, end_t = min(times), max(times)
-                    expected_count = end_t - start_t + 1 # 예: 6시~9시면 4개여야 함
+                    expected_count = end_t - start_t + 1
                     
-                    # 2. [검증] 실제 데이터 칸 수 vs 계산된 칸 수 비교
                     if len(times) != expected_count:
-                        # 여기서 에러를 발생시켜 프로그램이 경고창을 띄우게 함
-                        raise ValueError(
-                            f"데이터 오류 발견! [{day}일차]\n"
-                            f"시간대가 연속되지 않거나 중복 파일이 있습니다.\n"
-                            f"- 범위: {start_t}시 ~ {end_t}시 (필요: {expected_count}칸)\n"
-                            f"- 실제: {len(times)}칸 (중복/누락 확인 필요)"
-                        )
-                        
-                    # 3. 검증 통과 시, 엄격한 기준으로 라벨 생성
+                        raise ValueError(f"데이터 오류: 시간대 불연속")
                     labels = [''] + list(range(start_t, end_t + 1))
-                    
-                except ValueError as ve:
-                    raise ve # 위에서 만든 에러 메시지를 그대로 상위로 전달
                 except Exception:
-                    # 숫자가 아닌 컬럼이 섞여있을 경우 (예외 처리)
                     labels = [''] + time_cols
             else:
                 labels = ['']
 
-            # 4. 틱(눈금) 위치 설정 (데이터 개수에 정확히 맞춤)
-            # 0.5, 1.5, 2.5... 위치에 라벨을 찍어 정확도 향상
             ticks = np.arange(len(pivot.columns)) + 0.5
             ax.set_xticks(ticks)
             ax.set_xticklabels(labels, rotation=0)
 
-            # [재수정] 제목 포맷 변경: {관내/관외} 사전투표 ({기간})
-            # 예: 관내 사전투표 (전체(평균)) 또는 관외 사전투표 (1일차)
-            day_str = "전체(평균)" if str(day) == '전체' else f"{day}일차"
-            title_txt = f"{type_name} 사전투표 ({day_str})"
+            if str(day) == '전체':
+                day_str = "전체(합계)" if '투표자' in title_suffix else "전체(평균)"
+            else:
+                day_str = f"{day}일차"
+
+            title_txt = f"{type_name} 사전투표 ({day_str}) - {title_suffix}"
             
             ax.set_title(title_txt, fontsize=14, fontweight='bold', pad=20)
             ax.set_xlabel('시간대', fontsize=11, fontweight='bold')
 
-        # [추가] 만들어진 칸보다 그래프가 적을 때 빈 칸 숨기기 (예: 6칸 만들었는데 5개만 그릴 때)
         for i in range(count, len(axes_flat)):
             axes_flat[i].axis('off')
 
-        # [재수정] 메인 타이틀 포맷 변경: {지역명} 사전투표소 (예상) 혼잡도
-        # self.region_name에 값이 있으면 넣고, 없으면 기본 텍스트 출력
         if self.region_name:
-            main_title = f"{self.region_name} 사전투표소 (예상) 혼잡도"
+            main_title = f"{self.region_name} 사전투표소 현황 분석"
         else:
-            main_title = "사전투표소 (예상) 혼잡도"
+            main_title = "사전투표소 현황 분석"
 
         fig.suptitle(main_title, fontsize=20, fontweight='bold')
-        # [수정] 하단 설명 문구 개선 (가독성 높임)
+        
+        if cmap == 'Greens':
+            desc_text = "※ 각 셀의 수치: 장비 1대당 1시간 평균 처리 인원 (혼잡도)"
+            legend_text = "테두리: 전체 시간 평균  |  ( 괄호 안 ): 11~18시 집중평균  |  장비: [기존] → [변경]"
+        else:
+            desc_text = "※ 각 셀의 수치: 해당 시간대의 실제 투표자 수 합계 (단위: 명)"
+            legend_text = "테두리: 전체 시간 합계  |  장비: [기존] → [변경]"
+        
         fig.text(0.5, 0.02, 
-                    "※ 각 셀의 수치: 장비 1대당 1시간 동안의 투표자 수 (혼잡도)\n"
-                    "파란색 테두리: 전체 시간 평균  |  ( 괄호 안 숫자 ): 11~18시 집중평균  |  장비: [기존] → [변경]", 
+                    f"{desc_text}\n{legend_text}", 
                     ha='center', fontsize=11, fontweight='bold', color='#333333')
         
         plt.tight_layout(rect=[0, 0.05, 1, 0.95]) 
         
-        # _plot_page 함수가 받은 인자인 filename을 사용해야 합니다.
         if filename and not is_pdf:
             plt.savefig(filename)
             plt.close(fig)
-            
-        return fig
-
-# ... (위쪽 _plot_page 함수 내용은 기존 유지) ...
             
         return fig
 
@@ -2038,7 +2269,7 @@ class ElectionAnalyzerApp:
         f_pred.pack(fill="x", pady=(0, 10))
         
         # 앞부분 라벨
-        ttk.Label(f_pred, text="당해 사전투표율: ", font=("맑은 고딕", 9, "bold"), foreground="blue").pack(side="left")
+        ttk.Label(f_pred, text="예상 사전투표율: ", font=("맑은 고딕", 9, "bold"), foreground="blue").pack(side="left")
         
         # 중간 입력창 (숫자 수정 가능)
         self.entry_predict_rate = ttk.Entry(f_pred, width=8, justify="right", font=("맑은 고딕", 9, "bold"), foreground="blue")
@@ -2054,10 +2285,11 @@ class ElectionAnalyzerApp:
         f_ctrl = ttk.Frame(pnl)
         f_ctrl.pack(fill="x")
         
-        ttk.Label(f_ctrl, text="전체 투표자 증감률 적용: ").pack(side="left")
+        ttk.Label(f_ctrl, text="전체 투표자 증가율 적용: ").pack(side="left") # <--- 변경됨
         
         self.var_rate = tk.DoubleVar(value=0.0)
-        self.scale_rate = ttk.Scale(f_ctrl, from_=-50, to=50, variable=self.var_rate, command=self.on_slider_drag)
+        # [수정] 범위를 0 ~ 100으로 변경 (음수 불가)
+        self.scale_rate = ttk.Scale(f_ctrl, from_=0, to=100, variable=self.var_rate, command=self.on_slider_drag)
         self.scale_rate.pack(side="left", fill="x", expand=True, padx=5)
         
         # 증감률 표시용 입력창
@@ -2081,24 +2313,9 @@ class ElectionAnalyzerApp:
                    f"(총 {self.total_past_voters:,}명 / 관내 {self.total_past_intra:,}명 / 관외 {self.total_past_extra:,}명)")
             self.lbl_past_info.config(text=msg)
             
-            # 2. [수정] 슬라이더 초기값 설정 (사용자 논리 적용)
-            # 논리: 선거인수가 증가했다면, 투표자 수도 그 비율만큼 자연 증가한다고 가정 (투표율 유지)
-            if self.total_recent_electors > 0:
-                # 선거인수 증감률 계산 ( (이번 - 저번) / 저번 * 100 )
-                natural_growth_rate = ((self.total_recent_electors - self.total_past_electors) / self.total_past_electors) * 100
-                
-                # 계산된 '인구 증가율'만큼 슬라이더를 자동으로 이동
-                self.var_rate.set(natural_growth_rate)
-                
-                # 입력창에도 해당 수치 표시
-                self.entry_rate.delete(0, tk.END)
-                self.entry_rate.insert(0, f"{natural_growth_rate:.1f}")
-                
-                # 변경된 값으로 시뮬레이션 즉시 실행 (예상 투표율이 과거와 비슷하게 나옴)
-                self.on_slider_drag(natural_growth_rate)
-            else:
-                # 비교할 당해 데이터가 없으면 0으로 초기화
-                self.reset_rate_zero()
+            # 2. [수정] 슬라이더를 무조건 0%로 고정 (사용자 요청)
+            # 선거인수가 늘어도 투표자 수는 그대로 시작 -> 투표율은 과거보다 낮게 나옴
+            self.reset_rate_zero()
         else:
             # 과거 데이터가 없으면 0으로 초기화
             self.reset_rate_zero()
@@ -2111,34 +2328,38 @@ class ElectionAnalyzerApp:
         self.on_slider_drag(0.0)
     
     def _on_predict_rate_confirm(self, event):
-        # [기능] 예상 사전투표율(%)을 직접 수정하고 엔터를 쳤을 때 -> 슬라이더 역산
-        
-        # 1. 데이터 검증
         if self.total_past_voters == 0 or self.total_recent_electors == 0:
             messagebox.showwarning("데이터 부족", "기초 데이터가 로드되지 않았습니다.")
             return
 
         try:
             target_turnout = float(self.entry_predict_rate.get())
-            
-            # 2. 역산 로직
-            # 목표 투표자 수
             target_voters = self.total_recent_electors * (target_turnout / 100.0)
             
-            # 필요 증감률(%) = ((목표 - 과거) / 과거) * 100
-            required_rate = ((target_voters - self.total_past_voters) / self.total_past_voters) * 100
+            # [수정] 역산 로직: 인구 변동분이 반영된 베이스라인(baseline)을 먼저 구함
+            pop_ratio = 1.0
+            if self.total_past_electors > 0:
+                pop_ratio = self.total_recent_electors / self.total_past_electors
             
-            # 3. 슬라이더 범위(-50 ~ 50) 체크
-            if required_rate > 50:
-                required_rate = 50
-                messagebox.showwarning("범위 제한", "최대 증가율(50%)을 초과하여 50%로 설정합니다.")
-            elif required_rate < -50:
-                required_rate = -50
-                messagebox.showwarning("범위 제한", "최대 감소율(-50%)을 초과하여 -50%로 설정합니다.")
+            # Baseline = (과거관내 * 인구비) + 과거관외
+            baseline_voters = (self.total_past_intra * pop_ratio) + self.total_past_extra
             
-            # 4. 값 적용 (포커스 해제하여 입력창 갱신 허용)
+            if baseline_voters == 0: return
+
+            # 필요 증감률(R) 계산: Target = Baseline * (1 + R/100)
+            # 1 + R/100 = Target / Baseline
+            # R = (Target / Baseline - 1) * 100
+            required_rate = ((target_voters / baseline_voters) - 1) * 100
+            
+            # [수정] 범위 제한 로직 변경 (0% ~ 100%)
+            if required_rate > 100:
+                required_rate = 100
+                messagebox.showwarning("범위 제한", "최대 증가율(100%)을 초과하여 100%로 설정합니다.")
+            elif required_rate < 0:
+                required_rate = 0
+                messagebox.showwarning("범위 제한", "설정된 투표율이 너무 낮습니다.\n증가율은 0% 미만(감소)으로 설정할 수 없습니다.")
+            
             self.root.focus()
-            
             self.var_rate.set(required_rate)
             self.entry_rate.delete(0, tk.END)
             self.entry_rate.insert(0, f"{required_rate:.1f}")
@@ -2146,7 +2367,6 @@ class ElectionAnalyzerApp:
             self.on_slider_drag(required_rate)
             
         except ValueError:
-            # 숫자가 아닌 값 입력 시 복구
             self.on_slider_drag(self.var_rate.get())
 
     def on_slider_drag(self, val):
@@ -2155,25 +2375,41 @@ class ElectionAnalyzerApp:
         except:
             rate = 0.0
             
-        # 1. 입력창 텍스트 갱신 (포커스가 없을 때만 갱신하여 입력 방해 방지)
+        # 1. 입력창 텍스트 갱신
         if self.root.focus_get() != self.entry_rate:
             self.entry_rate.delete(0, tk.END)
             self.entry_rate.insert(0, f"{rate:.1f}")
 
         # 2. 예상 인원 및 투표율 계산
-        factor = 1 + (rate / 100.0)
+        # [수정 핵심] 전체 평균 비율 대신, 개별 투표소의 변동분을 합산하여 정확도 향상 (엑셀 리포트와 일치시킴)
+        slider_factor = 1 + (rate / 100.0)
         
-        # 전체 증감률 적용
-        pred_intra = self.total_past_intra * factor
-        pred_extra = self.total_past_extra * factor
+        pred_intra = 0
+        pred_extra = 0
+        
+        # 개별 투표소 데이터를 순회하며 정밀 합산
+        for st_name, data in self.station_data.items():
+            p_intra = data.get('past_intra', 0)
+            p_extra = data.get('past_extra', 0)
+            e_rate = data.get('elect_rate', 0) # 선거인수 변동률
+            
+            # [관내]
+            val_intra = p_intra * (1 + e_rate / 100.0) * slider_factor
+            
+            # [관외]
+            val_extra = p_extra * slider_factor
+            
+            # [수정 핵심] 엑셀과 똑같이 투표소마다 즉시 정수(int)로 변환하여 소수점을 버림
+            pred_intra += int(val_intra)
+            pred_extra += int(val_extra)
+            
         pred_total = pred_intra + pred_extra
         
         pred_rate = 0.0
         if self.total_recent_electors > 0:
             pred_rate = (pred_total / self.total_recent_electors) * 100
             
-        # 3. UI 업데이트 (입력창 + 상세 라벨)
-        # 사용자가 입력창을 타이핑 중일 때는 갱신 막기 (포커스 체크)
+        # 3. UI 업데이트
         if self.root.focus_get() != self.entry_predict_rate:
             self.entry_predict_rate.delete(0, tk.END)
             self.entry_predict_rate.insert(0, f"{pred_rate:.2f}")
@@ -2190,9 +2426,9 @@ class ElectionAnalyzerApp:
         try:
             val = float(self.entry_rate.get())
             
-            # 슬라이더 범위(-50 ~ 50) 제한
-            if val > 50: val = 50
-            elif val < -50: val = -50
+            # [수정] 슬라이더 범위(0 ~ 100) 제한
+            if val > 100: val = 100
+            elif val < 0: val = 0
             
             # 슬라이더 위치 이동
             self.var_rate.set(val)
@@ -2207,15 +2443,16 @@ class ElectionAnalyzerApp:
             # 숫자가 아닌 값을 입력하면 0으로 초기화
             self.reset_rate_zero()
 
-    # [대체 함수] 기존 on_slider_change를 대체
     def update_treeview_by_rate(self, val):
-        rate = int(float(val))
+        full_rate = float(val)       # [수정 1] 계산용 정밀 값 (대시보드와 동일)
+        disp_rate = round(full_rate, 1) # [수정 2] 화면 표시용 반올림 값
         
         for item_id in self.tree.get_children():
             st_name = item_id 
             if st_name in self.station_data:
-                self.station_data[st_name]['rate_intra'] = rate
-                self.station_data[st_name]['rate_extra'] = rate
+                # [핵심 수정] 데이터에는 '정밀 값(full_rate)'을 저장하여 롤 용지 계산 시 대시보드와 일치시킴
+                self.station_data[st_name]['rate_intra'] = full_rate
+                self.station_data[st_name]['rate_extra'] = full_rate
                 
                 # 화면 갱신용 데이터 준비
                 elect_disp = self.tree.item(item_id)['values'][1]
@@ -2227,7 +2464,8 @@ class ElectionAnalyzerApp:
                 disp_intra = f"{org_intra} → {curr_intra}" if curr_intra != org_intra else str(curr_intra)
                 disp_extra = f"{org_extra} → {curr_extra}" if curr_extra != org_extra else str(curr_extra)
 
-                rate_txt = self._get_merged_rate_text(rate, rate)
+                # [수정 3] 화면 텍스트(rate_txt)는 보기 좋게 반올림된 값 사용
+                rate_txt = self._get_merged_rate_text(disp_rate, disp_rate)
                 st_disp = st_name.replace("사전투표소", "")
 
                 self.tree.item(item_id, values=(st_disp, elect_disp, disp_intra, disp_extra, rate_txt))
@@ -2246,13 +2484,24 @@ class ElectionAnalyzerApp:
             r_intra = data.get('rate_intra', 0)
             r_extra = data.get('rate_extra', 0)
             
-            # 예상 인원 = 과거 * (1 + 증감률/100)
-            exp_i = p_intra * (1 + r_intra / 100.0)
-            exp_e = p_extra * (1 + r_extra / 100.0)
+            # [수정] 선거인수 변동률(elect_rate)도 함께 반영해야 정확한 예상이 됨
+            e_rate = data.get('elect_rate', 0)
+
+            # 복합 증감률 공식: (1 + 인구증감) * (1 + 사용자조정)
+            factor_i = (1 + e_rate / 100.0) * (1 + r_intra / 100.0)
+            factor_e = (1 + r_extra / 100.0) # 관외는 인구증감 영향 없음(기존 로직 따름)
+
+            exp_i = p_intra * factor_i
+            exp_e = p_extra * factor_e
             
-            total_exp_voters += (exp_i + exp_e)
-            total_exp_intra += exp_i
-            total_exp_extra += exp_e
+            # [수정 핵심] 소수점 처리 방식 통일! (엑셀/슬라이더와 동일하게 int로 변환 후 합산)
+            # 이렇게 해야 개별 수정 시에도 전체 합계가 정확히 맞아떨어집니다.
+            val_i = int(exp_i)
+            val_e = int(exp_e)
+            
+            total_exp_voters += (val_i + val_e)
+            total_exp_intra += val_i
+            total_exp_extra += val_e
             
         # 2. UI 업데이트 (입력창 + 상세 라벨)
         if self.total_recent_electors > 0:
